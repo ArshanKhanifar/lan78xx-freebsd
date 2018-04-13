@@ -41,7 +41,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/usb/usbdi_util.h>
 #include "usbdevs.h"
 
-#define	USB_DEBUG_VAR lan78xx_debug
+#define	USB_DEBUG lan78xx_debug
 #include <dev/usb/usb_debug.h>
 #include <dev/usb/usb_process.h>
 
@@ -50,7 +50,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/usb/net/if_lan78xxreg.h>
 
 #ifdef USB_DEBUG
-static int lan78xx_debug = 0;
+static int lan78xx_debug = 1;
 
 SYSCTL_NODE(_hw_usb, OID_AUTO, lan78xx, CTLFLAG_RW, 0, "USB lan78xx");
 SYSCTL_INT(_hw_usb_lan78xx, OID_AUTO, debug, CTLFLAG_RWTUN, &lan78xx_debug, 0,
@@ -100,9 +100,9 @@ static device_detach_t lan78xx_detach;
 static usb_callback_t lan78xx_bulk_read_callback;
 static usb_callback_t lan78xx_bulk_write_callback;
 
-//static miibus_readreg_t lan78xx_miibus_readreg;
-//static miibus_writereg_t lan78xx_miibus_writereg;
-//static miibus_statchg_t lan78xx_miibus_statchg;
+static miibus_readreg_t lan78xx_miibus_readreg;
+static miibus_writereg_t lan78xx_miibus_writereg;
+static miibus_statchg_t lan78xx_miibus_statchg;
 
 #if __FreeBSD_version > 1000000
 static int lan78xx_attach_post_sub(struct usb_ether *ue);
@@ -293,14 +293,21 @@ lan78xx_eeprom_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, ui
 	const usb_ticks_t max_ticks = USB_MS_TO_TICKS(1000);
 	int err;
 	int locked;
-	uint32_t val;
+	uint32_t val, saved;
 	uint16_t i;
 
 	locked = mtx_owned(&sc->sc_mtx);
 	if (!locked)
 		LAN78XX_LOCK(sc);
+
+	err = lan78xx_read_reg(sc, LAN78XX_HW_CFG, &val);
+	saved = val;
 	
+	val &= ~(LAN78XX_HW_CFG_LEDO_EN_ | LAN78XX_HW_CFG_LED1_EN_);
+	err = lan78xx_write_reg(sc, LAN78XX_HW_CFG, val);
+
 	err = lan78xx_wait_for_bits(sc, LAN78XX_E2P_CMD, LAN78XX_E2P_CMD_BUSY);
+
 	if (err != 0) {
 		lan78xx_warn_printf(sc, "eeprom busy, failed to read data\n");
 		goto done;
@@ -338,7 +345,7 @@ lan78xx_eeprom_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, ui
 done:
 	if (!locked)
 		LAN78XX_UNLOCK(sc);
-
+	lan78xx_write_reg(sc, LAN78XX_HW_CFG, saved);
 	return (err);
 }
 
@@ -360,18 +367,14 @@ lan78xx_eeprom_read(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16
 	uint8_t sig;
 	int ret;
 	
-	printf("reading from eeprom\n");
 	ret = lan78xx_eeprom_read_raw(sc, LAN78XX_E2P_INDICATOR_OFFSET, &sig, 1);
-	printf("eeprom sig: %d\n", sig);
 
 	if ((ret == 0) && (sig == LAN78XX_E2P_INDICATOR)) {
 		ret = lan78xx_eeprom_read_raw(sc, off, buf, buflen);
-		lan78xx_dbg_printf(sc, "EEPROM present");
-		printf("EEPROM is present\n");
+		lan78xx_dbg_printf(sc, "EEPROM present\n");
 	} else {
 		ret = -EINVAL;
-		lan78xx_dbg_printf(sc, "EEPROM not present");
-		printf("EEPROM is not present\n");
+		lan78xx_dbg_printf(sc, "EEPROM not present\n");
 	}
 	return ret;
 }
@@ -397,21 +400,16 @@ lan78xx_otp_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint1
 	int locked, err;
 	uint32_t val;
 	uint16_t i;
-	printf("lan78xx_otp_read_raw: begin\n");
 	locked = mtx_owned(&sc->sc_mtx);
 	if (!locked)
 		LAN78XX_LOCK(sc);
 
-	printf("reading LAN78XX_OTP_PWR_DN register\n");
 	err = lan78xx_read_reg(sc, LAN78XX_OTP_PWR_DN, &val);
-	printf("LAN78XX_OTP_PWR_DN: 0x%x\n", val);
 	
 	// checking if bit is set
 	if (val & LAN78XX_OTP_PWR_DN_PWRDN_N) {
 		// clearing it, then waiting for it to be cleared	
-		printf("clearing LAN78XX_OTP_PWR_DN register\n");
 		lan78xx_write_reg(sc, LAN78XX_OTP_PWR_DN, 0);
-		printf("waiting to be cleared LAN78XX_OTP_PWR_DN register\n");
 		err = lan78xx_wait_for_bits(sc, LAN78XX_OTP_PWR_DN, LAN78XX_OTP_PWR_DN_PWRDN_N);
 		if (err != 0) {
 			lan78xx_warn_printf(sc, "OTP off? failed to read data\n");
@@ -442,7 +440,6 @@ lan78xx_otp_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint1
 done:
 	if (!locked)
 		LAN78XX_UNLOCK(sc);
-
 	return (err);
 
 }
@@ -468,18 +465,13 @@ static int
 lan78xx_otp_read(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16_t buflen) {
 	uint8_t sig;
 	int err;
-	printf("reading from otp\n");
 
 	err = lan78xx_otp_read_raw(sc, LAN78XX_OTP_INDICATOR_OFFSET, &sig, 1);
-	printf("otp sig: %d\n", sig);
 	if (err == 0) {
 		if (sig == LAN78XX_OTP_INDICATOR_1) {
-			printf("otp present: 1\n");
 		} else if (sig == LAN78XX_OTP_INDICATOR_2) {
-			printf("otp present: 2\n");
 			off += 0x100;
 		} else {
-			printf("otp not present!\n");
 			err = -EINVAL;
 		}
 		if(!err)
@@ -497,32 +489,346 @@ lan78xx_otp_read(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16_t 
  *	values from the EEPROM.
  *
  *	LOCKING:
- *	Should be called with the SMSC lock held.
+ *	Should be called with the LAN78XX lock held.
  *
  *	RETURNS:
  *	Returns 0 on success or a negative error code.
  */
-//static int
-//lan78xx_setmacaddress(struct lan78xx_softc *sc, const uint8_t *addr)
-//{
-//	int err;
-//	uint32_t val;
-//
-//	lan78xx_dbg_printf(sc, "setting mac address to %02x:%02x:%02x:%02x:%02x:%02x\n",
-//	                addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-//
-//	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
-//
-//	val = (addr[3] << 24) | (addr[2] << 16) | (addr[1] << 8) | addr[0];
-//	if ((err = lan78xx_write_reg(sc, LAN78XX_RX_ADDRL, val)) != 0)
-//		goto done;
-//		
-//	val = (addr[5] << 8) | addr[4];
-//	err = lan78xx_write_reg(sc, LAN78XX_RX_ADDRH, val);
-//	
-//done:
-//	return (err);
-//}
+static int
+lan78xx_setmacaddress(struct lan78xx_softc *sc, const uint8_t *addr)
+{
+	int err;
+	uint32_t val;
+
+	lan78xx_dbg_printf(sc, "setting mac address to %02x:%02x:%02x:%02x:%02x:%02x\n",
+	                addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	val = (addr[3] << 24) | (addr[2] << 16) | (addr[1] << 8) | addr[0];
+	if ((err = lan78xx_write_reg(sc, LAN78XX_RX_ADDRL, val)) != 0)
+		goto done;
+		
+	val = (addr[5] << 8) | addr[4];
+	err = lan78xx_write_reg(sc, LAN78XX_RX_ADDRH, val);
+	
+done:
+	return (err);
+}
+
+static int lan78xx_set_rx_max_frame_length(struct lan78xx_softc *sc, int size) {
+	int err = 0;
+	uint32_t buf;
+	bool rxenabled;
+
+	/* first we have to disable rx before changing the length */
+
+	err = lan78xx_read_reg(sc, LAN78XX_MAC_RX, &buf);
+	rxenabled = ((buf & LAN78XX_MAC_RX_EN_) != 0);
+
+	if (rxenabled) {
+		buf &= ~LAN78XX_MAC_RX_EN_;
+		err = lan78xx_write_reg(sc, LAN78XX_MAC_RX, buf);
+	}
+	
+	/* setting max frame length */
+	
+	buf &= ~LAN78XX_MAC_RX_MAX_FR_SIZE_MASK_;
+	buf |= (((size + 4) << LAN78XX_MAC_RX_MAX_FR_SIZE_SHIFT_) & LAN78XX_MAC_RX_MAX_FR_SIZE_MASK_);
+	err = lan78xx_write_reg(sc, LAN78XX_MAC_RX, buf);
+	
+	if (rxenabled) {
+		buf |= LAN78XX_MAC_RX_EN_;
+		err = lan78xx_write_reg(sc, LAN78XX_MAC_RX, buf);
+	}
+
+	return 0;
+}
+
+/**
+ *	lan78xx_miibus_readreg - Reads a MII/MDIO register
+ *	@dev: usb ether device
+ *	@phy: the number of phy reading from
+ *	@reg: the register address
+ *
+ *	Attempts to read a phy register over the MII bus.
+ *
+ *	LOCKING:
+ *	Takes and releases the device mutex lock if not already held.
+ *
+ *	RETURNS:
+ *	Returns the 16-bits read from the MII register, if this function fails 0
+ *	is returned.
+ */
+static int
+lan78xx_miibus_readreg(device_t dev, int phy, int reg) {
+
+	struct lan78xx_softc *sc = device_get_softc(dev);
+	int locked;
+	uint32_t addr;
+	uint32_t val = 0;
+	locked = mtx_owned(&sc->sc_mtx);
+	if (!locked)
+		LAN78XX_LOCK(sc);
+
+	if (lan78xx_wait_for_bits(sc, LAN78XX_MII_ACCESS, LAN78XX_MII_BUSY_) != 0) {
+		lan78xx_warn_printf(sc, "MII is busy\n");
+		goto done;
+	}
+
+	addr = (phy << 11) | (reg << 6) | LAN78XX_MII_READ_;
+	lan78xx_write_reg(sc, LAN78XX_MII_ACCESS, addr);
+
+	if (lan78xx_wait_for_bits(sc, LAN78XX_MII_ACCESS, LAN78XX_MII_BUSY_) != 0) {
+		lan78xx_warn_printf(sc, "MII read timeout\n");
+		goto done;
+	}
+
+	lan78xx_read_reg(sc, LAN78XX_MII_DATA, &val);
+	val = le32toh(val);
+
+done:
+	if (!locked)
+		LAN78XX_UNLOCK(sc);
+
+	return (val & 0xFFFF);
+}
+
+/**
+ *	lan78xx_miibus_writereg - Writes a MII/MDIO register
+ *	@dev: usb ether device
+ *	@phy: the number of phy writing to
+ *	@reg: the register address
+ *	@val: the value to write
+ *
+ *	Attempts to write a phy register over the MII bus.
+ *
+ *	LOCKING:
+ *	Takes and releases the device mutex lock if not already held.
+ *
+ *	RETURNS:
+ *	Always returns 0 regardless of success or failure.
+ */
+static int
+lan78xx_miibus_writereg(device_t dev, int phy, int reg, int val)
+{
+	struct lan78xx_softc *sc = device_get_softc(dev);
+	int locked;
+	uint32_t addr;
+
+	if (sc->sc_phyno != phy)
+		return (0);
+
+	locked = mtx_owned(&sc->sc_mtx);
+	if (!locked)
+		LAN78XX_LOCK(sc);
+
+	if (lan78xx_wait_for_bits(sc, LAN78XX_MII_ACCESS, LAN78XX_MII_BUSY_) != 0) {
+		lan78xx_warn_printf(sc, "MII is busy\n");
+		goto done;
+	}
+
+	val = htole32(val);
+	lan78xx_write_reg(sc, LAN78XX_MII_DATA, val);
+
+	addr = (phy << 11) | (reg << 6) | LAN78XX_MII_WRITE_;
+	lan78xx_write_reg(sc, LAN78XX_MII_ACCESS, addr);
+
+	if (lan78xx_wait_for_bits(sc, LAN78XX_MII_ACCESS, LAN78XX_MII_BUSY_) != 0)
+		lan78xx_warn_printf(sc, "MII write timeout\n");
+
+done:
+	if (!locked)
+		LAN78XX_UNLOCK(sc);
+	return (0);
+}
+
+/*
+ *	lan78xx_miibus_statchg - Called to detect phy status change
+ *	@dev: usb ether device
+ *
+ *	This function is called periodically by the system to poll for status
+ *	changes of the link.
+ *
+ *	LOCKING:
+ *	Takes and releases the device mutex lock if not already held.
+ */
+static void
+lan78xx_miibus_statchg(device_t dev)
+{
+	struct lan78xx_softc *sc = device_get_softc(dev);
+	struct mii_data *mii = uether_getmii(&sc->sc_ue);
+	struct ifnet *ifp;
+	int locked;
+	int err;
+	uint32_t flow = 0;
+	uint32_t fct_flow = 0;
+
+	locked = mtx_owned(&sc->sc_mtx);
+	if (!locked)
+		LAN78XX_LOCK(sc);
+
+	ifp = uether_getifp(&sc->sc_ue);
+	if (mii == NULL || ifp == NULL ||
+	    (ifp->if_drv_flags & IFF_DRV_RUNNING) == 0)
+		goto done;
+
+	/* Use the MII status to determine link status */
+	sc->sc_flags &= ~LAN78XX_FLAG_LINK;
+
+	printf("mii->mii_media_status: 0x%08x\n", mii->mii_media_status);
+
+	if ((mii->mii_media_status & (IFM_ACTIVE | IFM_AVALID)) ==
+	    (IFM_ACTIVE | IFM_AVALID)) {
+		lan78xx_dbg_printf(sc, "media is active\n");
+		switch (IFM_SUBTYPE(mii->mii_media_active)) {
+			case IFM_10_T:
+			case IFM_100_TX:
+				sc->sc_flags |= LAN78XX_FLAG_LINK;
+				lan78xx_dbg_printf(sc, "10/100 ethernet\n");
+				break;
+			case IFM_1000_T:
+				sc->sc_flags |= LAN78XX_FLAG_LINK;
+				/* Gigabit ethernet not supported by chipset */
+				lan78xx_dbg_printf(sc, "Gigabit ethernet\n");
+				break;
+			default:
+				break;
+		}
+	} 
+	/* Lost link, do nothing. */
+	if ((sc->sc_flags & LAN78XX_FLAG_LINK) == 0) {
+		//lan78xx_dbg_printf(sc, "link flag not set\n");
+		goto done;
+	}
+
+	err = lan78xx_read_reg(sc, LAN78XX_FCT_FLOW, &fct_flow);
+	if (err) {
+		lan78xx_warn_printf(sc, "failed to read initial flow control thresholds, error %d\n", err);
+		goto done;
+	}
+
+	/* Enable/disable full duplex operation and TX/RX pause */
+	if ((IFM_OPTIONS(mii->mii_media_active) & IFM_FDX) != 0) {
+		lan78xx_dbg_printf(sc, "full duplex operation\n");
+
+		if ((IFM_OPTIONS(mii->mii_media_active) & IFM_ETH_TXPAUSE) != 0)
+			/* enable transmit MAC flow control function */
+			flow |= LAN78XX_FLOW_CR_TX_FCEN_ | 0xFFFF;
+
+		if ((IFM_OPTIONS(mii->mii_media_active) & IFM_ETH_RXPAUSE) != 0)
+			flow |= LAN78XX_FLOW_CR_RX_FCEN_;
+	}
+
+	switch(usbd_get_speed(sc->sc_ue.ue_udev)) {
+		case USB_SPEED_SUPER:	
+			fct_flow = 0x817;
+			break;
+		case USB_SPEED_HIGH:	
+			fct_flow = 0x211;
+			break;
+		default:
+			break;
+	}
+
+	err += lan78xx_write_reg(sc, LAN78XX_FLOW, flow);
+	err += lan78xx_write_reg(sc, LAN78XX_FCT_FLOW, fct_flow);
+	if (err)
+		lan78xx_warn_printf(sc, "media change failed, error %d\n", err);
+
+done:
+	if (!locked)
+		LAN78XX_UNLOCK(sc);
+}
+
+static void lan78xx_set_mdix_status(struct lan78xx_softc *sc, uint8_t mdix_ctrl) {
+	uint32_t buf, err;
+	// TODO: support other MDIX status right now it's only AUTO
+	err = lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno,
+					LAN78XX_EXT_PAGE_ACCESS, LAN78XX_EXT_PAGE_SPACE_1);
+	
+	buf = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, LAN78XX_EXT_MODE_CTRL);
+	buf &= ~LAN78XX_EXT_MODE_CTRL_MDIX_MASK_;
+	buf |= LAN78XX_EXT_MODE_CTRL_AUTO_MDIX_;
+
+	lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR);
+	err += lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno,
+					LAN78XX_EXT_MODE_CTRL, buf);
+
+	err += lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno,
+					LAN78XX_EXT_PAGE_ACCESS, LAN78XX_EXT_PAGE_SPACE_0);
+
+	if (err != 0)
+		lan78xx_warn_printf(sc, "error setting PHY's MDIX status\n");
+
+	sc->sc_mdix_ctl = buf;
+}
+
+/**
+ *	lan78xx_phy_init - Initialises the in-built LAN78XX phy
+ *	@sc: driver soft context
+ *
+ *	Resets the PHY part of the chip and then initialises it to default
+ *	values.  The 'link down' and 'auto-negotiation complete' interrupts
+ *	from the PHY are also enabled, however we don't monitor the interrupt
+ *	endpoints for the moment.
+ *
+ *	RETURNS:
+ *	Returns 0 on success or EIO if failed to reset the PHY.
+ */
+static int
+lan78xx_phy_init(struct lan78xx_softc *sc)
+{
+	lan78xx_dbg_printf(sc, "Initializing PHY.\n");
+	int bmcr;
+	usb_ticks_t start_ticks;
+	const usb_ticks_t max_ticks = USB_MS_TO_TICKS(1000);
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	/* Reset phy and wait for reset to complete */
+	lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR, BMCR_RESET);
+
+	start_ticks = ticks;
+	do {
+		uether_pause(&sc->sc_ue, hz / 100);
+		bmcr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR);
+	} while ((bmcr & MII_BMCR) && ((ticks - start_ticks) < max_ticks));
+
+	if (((usb_ticks_t)(ticks - start_ticks)) >= max_ticks) {
+		lan78xx_err_printf(sc, "PHY reset timed-out");
+		return (EIO);
+	}
+
+	/* Setup the phy to interrupt when the link goes down or autoneg completes */
+	lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, LAN78XX_PHY_INTR_STAT);
+	lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, LAN78XX_PHY_INTR_MASK,
+	                     (LAN78XX_PHY_INTR_ANEG_COMP | LAN78XX_PHY_INTR_LINK_CHANGE));
+	// TODO: pass MDIX_AUTO here instead of 0 later..
+	lan78xx_set_mdix_status(sc, 0);
+
+	lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_ANAR,
+	                     ANAR_10 | ANAR_10_FD | ANAR_TX | ANAR_TX_FD |  /* all modes */
+	                     ANAR_CSMA | 
+	                     ANAR_FC |
+	                     ANAR_PAUSE_ASYM);
+
+
+	/* Restart auto-negotation */
+	bmcr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR);
+	bmcr |= BMCR_STARTNEG;
+	bmcr |= BMCR_AUTOEN;
+	lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR, bmcr);
+	
+	bmcr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR);
+	printf("BMCR REGISTER after write: 0x%08x\n", bmcr);
+
+	uint16_t bmsr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMSR);
+	printf("BMSR REGISTER: 0x%08x\n", bmsr);
+
+	return (0);
+}
+
 
 /**
  *	lan78xx_chip_init - Initialises the chip after power on
@@ -537,175 +843,372 @@ lan78xx_otp_read(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16_t 
 static int
 lan78xx_chip_init(struct lan78xx_softc *sc)
 {
-	printf("lan78xx_chip_init: returning early\n");
-	return 0;
-//	int err;
-//	int locked;
-//	uint32_t reg_val;
-//	int burst_cap;
-//
-//	locked = mtx_owned(&sc->sc_mtx);
-//	if (!locked)
-//		LAN78XX_LOCK(sc);
-//
-//	/* Enter H/W config mode */
-//	lan78xx_write_reg(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST);
-//
-//	if ((err = lan78xx_wait_for_bits(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST)) != 0) {
-//		lan78xx_warn_printf(sc, "timed-out waiting for reset to complete\n");
-//		goto init_failed;
-//	}
-//
-//	/* Reset the PHY */
-//	lan78xx_write_reg(sc, LAN_78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST);
-//
-//	if ((err = lan78xx_wait_for_bits(sc, LAN_78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST)) != 0) {
-//		lan78xx_warn_printf(sc, "timed-out waiting for phy reset to complete\n");
-//		goto init_failed;
-//	}
-//
-//	/* Set the mac address */
-//	if ((err = lan78xx_setmacaddress(sc, sc->sc_ue.ue_eaddr)) != 0) {
-//		lan78xx_warn_printf(sc, "failed to set the MAC address\n");
-//		goto init_failed;
-//	}
-//
-//	/* Don't know what the HW_CFG_BIR bit is, but following the reset sequence
-//	 * as used in the Linux driver.
-//	 */
-//	if ((err = lan78xx_read_reg(sc, LAN78XX_HW_CFG, &reg_val)) != 0) {
-//		lan78xx_warn_printf(sc, "failed to read LAN78XX_HW_CFG: %d\n", err);
-//		goto init_failed;
-//	}
-//	reg_val |= SMSC_HW_CFG_BIR;
-//	lan78xx_write_reg(sc, SMSC_HW_CFG, reg_val);
-//
-//	/* There is a so called 'turbo mode' that the linux driver supports, it
-//	 * seems to allow you to jam multiple frames per Rx transaction.  By default
-//	 * this driver supports that and therefore allows multiple frames per URB.
-//	 *
-//	 * The xfer buffer size needs to reflect this as well, therefore based on
-//	 * the calculations in the Linux driver the RX bufsize is set to 18944,
-//	 *     bufsz = (16 * 1024 + 5 * 512)
-//	 *
-//	 * Burst capability is the number of URBs that can be in a burst of data/
-//	 * ethernet frames.
-//	 */
-//	switch(usbd_get_speed(sc->sc_ue.ue_udev)) {
-//		case USB_SPEED_SUPER:	
-//			burst_cap = 1024;
-//			break;
-//		case USB_SPEED_HIGH:	
-//			burst_cap = 512;
-//			break;
-//		default:
-//			burst_cap = 64;
-//	}
-//
-//	lan78xx_write_reg(sc, LAN78XX_BURST_CAP, burst_cap);
-//
-//	/* Set the default bulk in delay (magic value from Linux driver) */
-//	lan78xx_write_reg(sc, LAN78XX_BULK_IN_DLY, 0x00002000);
-//
-//	/*
-//	 * Initialise the RX interface
-//	 */
-//	if ((err = lan78xx_read_reg(sc, LAN78XX_HW_CFG, &reg_val)) < 0) {
-//		lan78xx_warn_printf(sc, "failed to read HW_CFG: (err = %d)\n", err);
-//		goto init_failed;
-//	}
-//
-//	/* Adjust the packet offset in the buffer (designed to try and align IP
-//	 * header on 4 byte boundary)
-//	 */
-//	reg_val &= ~SMSC_HW_CFG_RXDOFF;
-//	reg_val |= (ETHER_ALIGN << 9) & SMSC_HW_CFG_RXDOFF;
-//	
-//	/* The following setings are used for 'turbo mode', a.k.a multiple frames
-//	 * per Rx transaction (again info taken form Linux driver).
-//	 */
-//	reg_val |= (SMSC_HW_CFG_MEF | SMSC_HW_CFG_BCE);
-//
-//	lan78xx_write_reg(sc, SMSC_HW_CFG, reg_val);
-//
-//	/* Clear the status register ? */
-//	lan78xx_write_reg(sc, SMSC_INTR_STATUS, 0xffffffff);
-//
-//	/* Read and display the revision register */
-//	if ((err = lan78xx_read_reg(sc, SMSC_ID_REV, &sc->sc_rev_id)) < 0) {
-//		lan78xx_warn_printf(sc, "failed to read ID_REV (err = %d)\n", err);
-//		goto init_failed;
-//	}
-//
-//	device_printf(sc->sc_ue.ue_dev, "chip 0x%04lx, rev. %04lx\n", 
-//	    (sc->sc_rev_id & SMSC_ID_REV_CHIP_ID_MASK) >> 16, 
-//	    (sc->sc_rev_id & SMSC_ID_REV_CHIP_REV_MASK));
-//
-//	/* GPIO/LED setup */
-//	reg_val = SMSC_LED_GPIO_CFG_SPD_LED | SMSC_LED_GPIO_CFG_LNK_LED | 
-//	          SMSC_LED_GPIO_CFG_FDX_LED;
-//	lan78xx_write_reg(sc, SMSC_LED_GPIO_CFG, reg_val);
-//
-//	/*
-//	 * Initialise the TX interface
-//	 */
-//	lan78xx_write_reg(sc, SMSC_FLOW, 0);
-//
-//	lan78xx_write_reg(sc, SMSC_AFC_CFG, AFC_CFG_DEFAULT);
-//
-//	/* Read the current MAC configuration */
-//	if ((err = lan78xx_read_reg(sc, SMSC_MAC_CSR, &sc->sc_mac_csr)) < 0) {
-//		lan78xx_warn_printf(sc, "failed to read MAC_CSR (err=%d)\n", err);
-//		goto init_failed;
-//	}
-//	
-//	/* Vlan */
-//	lan78xx_write_reg(sc, SMSC_VLAN1, (uint32_t)ETHERTYPE_VLAN);
-//
-//	/*
-//	 * Initialise the PHY
-//	 */
-//	if ((err = lan78xx_phy_init(sc)) != 0)
-//		goto init_failed;
-//
-//
-//	/*
-//	 * Start TX
-//	 */
-//	sc->sc_mac_csr |= SMSC_MAC_CSR_TXEN;
-//	lan78xx_write_reg(sc, SMSC_MAC_CSR, sc->sc_mac_csr);
-//	lan78xx_write_reg(sc, SMSC_TX_CFG, SMSC_TX_CFG_ON);
-//
-//	/*
-//	 * Start RX
-//	 */
-//	sc->sc_mac_csr |= SMSC_MAC_CSR_RXEN;
-//	lan78xx_write_reg(sc, SMSC_MAC_CSR, sc->sc_mac_csr);
-//
-//	if (!locked)
-//		SMSC_UNLOCK(sc);
-//
-//	return (0);
-//	
-//init_failed:
-//	if (!locked)
-//		SMSC_UNLOCK(sc);
-//
-//	lan78xx_err_printf(sc, "lan78xx_chip_init failed (err=%d)\n", err);
-//	return (err);
-}
+	lan78xx_dbg_printf(sc, "Calling lan78xx_chip_init.\n");
+	int err;
+	int locked;
+	uint32_t buf;
+	uint32_t burst_cap;
 
+	locked = mtx_owned(&sc->sc_mtx);
+	if (!locked)
+		LAN78XX_LOCK(sc);
+
+	/* Enter H/W config mode */
+	lan78xx_write_reg(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST);
+
+	if ((err = lan78xx_wait_for_bits(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST)) != 0) {
+		lan78xx_warn_printf(sc, "timed-out waiting for lite reset to complete\n");
+		goto init_failed;
+	}
+
+	/* Set the mac address */
+	if ((err = lan78xx_setmacaddress(sc, sc->sc_ue.ue_eaddr)) != 0) {
+		lan78xx_warn_printf(sc, "failed to set the MAC address\n");
+		goto init_failed;
+	}
+
+	/* Read and display the revision register */
+	if ((err = lan78xx_read_reg(sc, LAN78XX_ID_REV, &sc->sc_rev_id)) < 0) {
+		lan78xx_warn_printf(sc, "failed to read ID_REV (err = %d)\n", err);
+		goto init_failed;
+	}
+
+	device_printf(sc->sc_ue.ue_dev, "chip 0x%04lx, rev. %04lx\n", 
+	    (sc->sc_rev_id & LAN78XX_ID_REV_CHIP_ID_MASK_) >> 16, 
+	    (sc->sc_rev_id & LAN78XX_ID_REV_CHIP_REV_MASK_));
+
+	/* respond to BULK-IN tokens with a NAK when RX FIFO is empty */
+
+	if ((err = lan78xx_read_reg(sc, LAN78XX_USB_CFG0, &buf)) != 0) {
+		lan78xx_warn_printf(sc, "failed to read LAN78XX_USB_CFG0: %d\n", err);
+		goto init_failed;
+	}
+	buf |= LAN78XX_USB_CFG_BIR_;
+	lan78xx_write_reg(sc, LAN78XX_USB_CFG0, buf);
+
+	// TODO: activate LTM. Needs EEPROM access. Not used for now.
+
+	/* configuring the burst cap */
+	switch(usbd_get_speed(sc->sc_ue.ue_udev)) {
+		case USB_SPEED_SUPER:	
+			burst_cap = LAN78XX_DEFAULT_BURST_CAP_SIZE/LAN78XX_SS_USB_PKT_SIZE;
+			break;
+		case USB_SPEED_HIGH:	
+			burst_cap = LAN78XX_DEFAULT_BURST_CAP_SIZE/LAN78XX_HS_USB_PKT_SIZE;
+			break;
+		default:
+			burst_cap = LAN78XX_DEFAULT_BURST_CAP_SIZE/LAN78XX_FS_USB_PKT_SIZE;
+	}
+
+	lan78xx_write_reg(sc, LAN78XX_BURST_CAP, burst_cap);
+
+	/* Set the default bulk in delay (same value from Linux driver) */
+	lan78xx_write_reg(sc, LAN78XX_BULK_IN_DLY, LAN78XX_DEFAULT_BULK_IN_DELAY);
+
+
+	/* Multiple ethernet frames per USB packets */
+	err = lan78xx_read_reg(sc, LAN78XX_HW_CFG, &buf);
+	buf |= LAN78XX_HW_CFG_MEF_;
+	err = lan78xx_write_reg(sc, LAN78XX_HW_CFG, buf);
+
+	/* Enable burst cap */
+	if ((err = lan78xx_read_reg(sc, LAN78XX_USB_CFG0, &buf)) < 0) {
+		lan78xx_warn_printf(sc, "failed to read USB_CFG0: (err = %d)\n", err);
+		goto init_failed;
+	}
+	buf |= LAN78XX_USB_CFG_BCE_;
+	err = lan78xx_write_reg(sc, LAN78XX_USB_CFG0, buf);
+ 
+	/*
+	 * Set FCL's RX and TX FIFO sizes: according to data sheet this is already the 
+	 * default value. But we initialize it to the same value anyways.
+	 * Linux driver does it, cuz why not :)
+	 */
+
+	buf = (LAN78XX_MAX_RX_FIFO_SIZE - 512) / 512;
+	err = lan78xx_write_reg(sc, LAN78XX_FCT_RX_FIFO_END, buf);
+
+	buf = (LAN78XX_MAX_TX_FIFO_SIZE - 512) / 512;
+	err = lan78xx_write_reg(sc, LAN78XX_FCT_TX_FIFO_END, buf);
+
+	/* Enabling interrupts. (Not using them for now) */
+
+	err = lan78xx_write_reg(sc, LAN78XX_INT_STS, LAN78XX_INT_STS_CLEAR_ALL_);
+
+	/*
+	 * Initializing flow control registers to 0. These registers are properly set 
+	 * is handled in link-reset function in the Linux driver.
+	 */
+
+	err = lan78xx_write_reg(sc, LAN78XX_FLOW, 0);
+	err = lan78xx_write_reg(sc, LAN78XX_FCT_FLOW, 0);
+
+	/*
+	 * Settings for the RFE, we enable broadcast and destination address perfect
+	 * filtering.
+	 */
+
+	err = lan78xx_read_reg(sc, LAN78XX_RFE_CTL, &buf); 
+	buf |= LAN78XX_RFE_CTL_BCAST_EN_ | LAN78XX_RFE_CTL_DA_PERFECT_;
+	err = lan78xx_write_reg(sc, LAN78XX_RFE_CTL, buf);
+
+	/*
+	 * At this point the Linux driver writes multicast tables, and enables 
+	 * checksum engines. But in FreeBSD that gets done in lan78xx_init,
+	 * which gets called when the interface is brought up.
+	 */
+
+	/* Reset the PHY */
+	lan78xx_write_reg(sc, LAN_78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST);
+	if ((err = lan78xx_wait_for_bits(sc, LAN_78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST)) != 0) {
+		lan78xx_warn_printf(sc, "timed-out waiting for phy reset to complete\n");
+		goto init_failed;
+	}
+
+	/* Enable automatic duplex detection and automatic speed detection. */
+	err = lan78xx_read_reg(sc, LAN78XX_MAC_CR, &buf);
+	buf |= LAN78XX_MAC_CR_AUTO_DUPLEX_ | LAN78XX_MAC_CR_AUTO_SPEED_;
+	err = lan78xx_write_reg(sc, LAN78XX_MAC_CR, buf);
+
+	/*
+	 * Enable PHY interrupts (Not really getting used for now)
+	 * INT_EP_CTL: interrupt endpoint control register
+	 * phy events cause interrupts to be issued
+	 */
+	err = lan78xx_read_reg(sc, LAN78XX_INT_EP_CTL, &buf);
+	buf |= LAN78XX_INT_ENP_PHY_INT;
+	err = lan78xx_write_reg(sc, LAN78XX_INT_EP_CTL, buf);
+
+	/* 
+	 * Enables mac's transmitter. it'll transmit frames 
+	 * from the buffer onto the cable.
+	 */
+	err = lan78xx_read_reg(sc, LAN78XX_MAC_TX, &buf);
+	buf |= LAN78XX_MAC_TX_TXEN_;
+	err = lan78xx_write_reg(sc, LAN78XX_MAC_TX, buf);
+
+	/*
+	 * FIFO is capable of transmitting frames to MAC
+	 */
+	err = lan78xx_read_reg(sc, LAN78XX_FCT_TX_CTL, &buf);
+	buf |= LAN78XX_FCT_TX_CTL_EN_;
+	err = lan78xx_write_reg(sc, LAN78XX_FCT_TX_CTL, buf);
+
+	/*
+	 * Set max frame length:
+	 * In linux this is dev->mtu (which by default is 1500) + VLAN_ETH_HLEN = 1518
+	 */
+
+	err = lan78xx_set_rx_max_frame_length(sc, ETHER_MAX_LEN);
+
+	/*
+	 * Initialise the PHY
+	 */
+	if ((err = lan78xx_phy_init(sc)) != 0)
+		goto init_failed;
+
+	/*
+	 * enable MAC RX
+	 */
+	err = lan78xx_read_reg(sc, LAN78XX_MAC_RX, &buf);
+	buf |= LAN78XX_MAC_RX_EN_;
+	err = lan78xx_write_reg(sc, LAN78XX_MAC_RX, buf);
+
+	/*
+	 * enable FIFO controller RX
+	 */
+	err = lan78xx_read_reg(sc, LAN78XX_FCT_RX_CTL, &buf);
+	buf |= LAN78XX_FCT_TX_CTL_EN_;
+	err = lan78xx_write_reg(sc, LAN78XX_FCT_RX_CTL, buf);
+
+	return 0;
+
+init_failed:
+	if (!locked)
+		LAN78XX_UNLOCK(sc);
+
+	lan78xx_err_printf(sc, "lan78xx_chip_init failed (err=%d)\n", err);
+	return (err);
+}
 
 static void
 lan78xx_bulk_read_callback(struct usb_xfer *xfer, usb_error_t error)
 {
 	// will figure out
+	// let's figure it out!
+	struct lan78xx_softc *sc = usbd_xfer_softc(xfer);
+	struct usb_ether *ue = &sc->sc_ue;
+	struct ifnet *ifp = uether_getifp(ue);
+	struct mbuf *m;
+	struct usb_page_cache *pc;
+	uint16_t pktlen;
+	uint32_t rx_cmd_a, rx_cmd_b;
+	uint16_t rx_cmd_c;
+	int off;
+	int actlen;
+
+	usbd_xfer_status(xfer, &actlen, NULL, NULL, NULL);
+	lan78xx_dbg_printf(sc, "rx : actlen %d\n", actlen);
+
+	switch (USB_GET_STATE(xfer)) {
+	case USB_ST_TRANSFERRED:
+
+		/* There is always a zero length frame after bringing the IF up */
+		if (actlen < (sizeof(rx_cmd_a) + ETHER_CRC_LEN))
+			goto tr_setup;
+
+		/* There maybe multiple packets in the USB frame, each will have a 
+		 * header and each needs to have it's own mbuf allocated and populated
+		 * for it.
+		 */
+		pc = usbd_xfer_get_frame(xfer, 0);
+		off = 0;
+
+		while (off < actlen) {
+
+			/* The frame header is always aligned on a 4 byte boundary */
+			off = ((off + 0x3) & ~0x3);
+
+			/* extract RX CMD A */
+			usbd_copy_out(pc, off, &rx_cmd_a, sizeof(rx_cmd_a));
+			off += (sizeof(rx_cmd_a));
+			rx_cmd_a = le32toh(rx_cmd_a);
+
+			/* extract RX CMD B */
+			usbd_copy_out(pc, off, &rx_cmd_b, sizeof(rx_cmd_b));
+			off += (sizeof(rx_cmd_b));
+			rx_cmd_b = le32toh(rx_cmd_b);
+
+			/* extract RX CMD C */
+			usbd_copy_out(pc, off, &rx_cmd_c, sizeof(rx_cmd_c));
+			off += (sizeof(rx_cmd_c));
+			rx_cmd_b = le32toh(rx_cmd_c);
+
+			pktlen = (rx_cmd_a & LAN78XX_RX_CMD_A_LEN_MASK_);
+
+			lan78xx_dbg_printf(sc, "rx : rx_cmd_a 0x%08x : rx_cmd_b 0x%08x :"
+							" rx_cmd_c 0x%04x : pktlen %d : actlen %d : off %d\n",
+			                rx_cmd_a, rx_cmd_b, rx_cmd_c, pktlen, actlen, off);
+
+			if (rx_cmd_a & LAN78XX_RX_CMD_A_RED_) {
+				lan78xx_dbg_printf(sc, "rx error (hdr 0x%08x)\n", rx_cmd_a);
+				if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
+			} else {
+				/* Check if the ethernet frame is too big or too small */
+				if ((pktlen < ETHER_HDR_LEN) || (pktlen > (actlen - off)))
+					goto tr_setup;
+
+				/* Create a new mbuf to store the packet in */
+				m = uether_newbuf();
+				if (m == NULL) {
+					lan78xx_warn_printf(sc, "failed to create new mbuf\n");
+					if_inc_counter(ifp, IFCOUNTER_IQDROPS, 1);
+					goto tr_setup;
+				}
+			
+				usbd_copy_out(pc, off, mtod(m, uint8_t *), pktlen);
+
+				/* Check if RX TCP/UDP checksumming is being offloaded */
+				// TODO: do this later
+			
+				/* Finally enqueue the mbuf on the receive queue */
+				/* Remove 4 trailing bytes */
+				if (pktlen < (4 + ETHER_HDR_LEN)) {
+					m_freem(m);
+					goto tr_setup;
+				}
+				uether_rxmbuf(ue, m, pktlen - 4);
+			}
+
+			/* Update the offset to move to the next potential packet */
+			off += pktlen;
+		}
+
+		/* FALLTHROUGH */
+		
+	case USB_ST_SETUP:
+tr_setup:
+		usbd_xfer_set_frame_len(xfer, 0, usbd_xfer_max_len(xfer));
+		usbd_transfer_submit(xfer);
+		uether_rxflush(ue);
+		return;
+
+	default:
+		if (error != USB_ERR_CANCELLED) {
+			lan78xx_warn_printf(sc, "bulk read error, %s\n", usbd_errstr(error));
+			usbd_xfer_set_stall(xfer);
+			goto tr_setup;
+		}
+		return;
+	}
 }
 
 static void
 lan78xx_bulk_write_callback(struct usb_xfer *xfer, usb_error_t error)
 {
 	// will figure out
+	// let's figure this out! hehehe
+
+	struct lan78xx_softc *sc = usbd_xfer_softc(xfer);
+	struct ifnet *ifp = uether_getifp(&sc->sc_ue);
+	struct usb_page_cache *pc;
+	struct mbuf *m;
+	uint32_t frm_len = 0;
+	int nframes;
+
+	switch (USB_GET_STATE(xfer)) {
+	case USB_ST_TRANSFERRED:
+		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
+		/* FALLTHROUGH */
+	case USB_ST_SETUP:
+tr_setup:
+		if ((sc->sc_flags & LAN78XX_FLAG_LINK) == 0 ||
+			(ifp->if_drv_flags & IFF_DRV_OACTIVE) != 0) {
+			/* Don't send anything if there is no link or controller is busy. */
+			return;
+		}
+		for (nframes = 0; nframes < 16 &&
+		    !IFQ_DRV_IS_EMPTY(&ifp->if_snd); nframes++) {
+			IFQ_DRV_DEQUEUE(&ifp->if_snd, m);
+			if (m == NULL)
+				break;
+			usbd_xfer_set_frame_offset(xfer, nframes * MCLBYTES,
+			    nframes);
+			frm_len = 0;
+			pc = usbd_xfer_get_frame(xfer, nframes);
+			/* Linux driver doesn't seem to be prefixing any status words. */
+		
+			usbd_m_copy_in(pc, frm_len, m, 0, m->m_pkthdr.len);
+			frm_len += m->m_pkthdr.len;
+
+			if_inc_counter(ifp, IFCOUNTER_OPACKETS, 1);
+		
+			/* If there's a BPF listener, bounce a copy of this frame to him */
+			BPF_MTAP(ifp, m);
+			m_freem(m);
+
+			/* Set frame length. */
+			usbd_xfer_set_frame_len(xfer, nframes, frm_len);
+		}
+
+		if (nframes != 0) {
+			usbd_xfer_set_frames(xfer, nframes);
+			usbd_transfer_submit(xfer);
+			ifp->if_drv_flags |= IFF_DRV_OACTIVE;
+		}
+		return;
+
+	default:
+		if_inc_counter(ifp, IFCOUNTER_OERRORS, 1);
+		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
+		
+		if (error != USB_ERR_CANCELLED) {
+			lan78xx_err_printf(sc, "usb error on tx: %s\n", usbd_errstr(error));
+			usbd_xfer_set_stall(xfer);
+			goto tr_setup;
+		}
+		return;
+	}
 }
 
 /**
@@ -725,8 +1228,6 @@ lan78xx_attach_post(struct usb_ether *ue)
 	uint32_t mac_h, mac_l;
 	//int err;
 
-	lan78xx_dbg_printf(sc, "lan78xx_attach_post\n");
-
 	/* Setup some of the basics */
 	sc->sc_phyno = 1;
 
@@ -735,6 +1236,9 @@ lan78xx_attach_post(struct usb_ether *ue)
 	 * address based on urandom.
 	 */
 	memset(sc->sc_ue.ue_eaddr, 0xff, ETHER_ADDR_LEN);
+
+	uint32_t val;
+	lan78xx_read_reg(sc, 0, &val);
 
 	/* Check if there is already a MAC address in the register */
 	if ((lan78xx_read_reg(sc, LAN78XX_RX_ADDRL, &mac_l) == 0) &&
@@ -754,13 +1258,18 @@ lan78xx_attach_post(struct usb_ether *ue)
 		if ((lan78xx_eeprom_read(sc, LAN78XX_E2P_MAC_OFFSET, sc->sc_ue.ue_eaddr, ETHER_ADDR_LEN) == 0) ||
 			(lan78xx_otp_read(sc, LAN78XX_OTP_MAC_OFFSET, sc->sc_ue.ue_eaddr, ETHER_ADDR_LEN) == 0)) {
 			if(ETHER_IS_VALID(sc->sc_ue.ue_eaddr)) {
-				printf("ether MAC is valid!\n");
+				lan78xx_dbg_printf(sc, "MAC read from EEPROM\n");
 			} else {
-				printf("ether MAC is invalid!\n");
+				lan78xx_dbg_printf(sc, "MAC assigned randomly\n");
 				read_random(sc->sc_ue.ue_eaddr, ETHER_ADDR_LEN);
 				sc->sc_ue.ue_eaddr[0] &= ~0x01;     /* unicast */
 				sc->sc_ue.ue_eaddr[0] |=  0x02;     /* locally administered */
 			}
+		} else {
+			lan78xx_dbg_printf(sc, "MAC assigned randomly\n");
+			arc4rand(sc->sc_ue.ue_eaddr, ETHER_ADDR_LEN, 0);
+			sc->sc_ue.ue_eaddr[0] &= ~0x01;     /* unicast */
+			sc->sc_ue.ue_eaddr[0] |=  0x02;     /* locally administered */
 		}
 	}
 	
@@ -783,10 +1292,49 @@ lan78xx_attach_post(struct usb_ether *ue)
 static int
 lan78xx_attach_post_sub(struct usb_ether *ue)
 {
-	printf("lan78xx_attach_post_sub\n");
+	struct lan78xx_softc *sc;
+	struct ifnet *ifp;
+	int error;
+
+	sc = uether_getsc(ue);
+	lan78xx_dbg_printf(sc, "Calling lan78xx_attach_post_sub.\n");
+	ifp = ue->ue_ifp;
+	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
+	ifp->if_start = uether_start;
+	ifp->if_ioctl = lan78xx_ioctl;
+	ifp->if_init = uether_init;
+	IFQ_SET_MAXLEN(&ifp->if_snd, ifqmaxlen);
+	ifp->if_snd.ifq_drv_maxlen = ifqmaxlen;
+	IFQ_SET_READY(&ifp->if_snd);
+
+	/*
+	 * The chip supports TCP/UDP checksum offloading on TX and RX paths, however
+	 * currently only RX checksum is supported in the driver (see top of file).
+	 * TODO: add RX and TX checksumming
+	 */
+
+	ifp->if_capabilities &= ~(IFCAP_RXCSUM | IFCAP_VLAN_MTU);
+	ifp->if_hwassist = 0;
+
+	/* TX checksuming is disabled (for now?)
+	ifp->if_capabilities |= IFCAP_TXCSUM;
+	ifp->if_capenable |= IFCAP_TXCSUM;
+	ifp->if_hwassist = CSUM_TCP | CSUM_UDP;
+	*/
+
+	ifp->if_capenable = ifp->if_capabilities;
+
+	mtx_lock(&Giant);
+	error = mii_attach(ue->ue_dev, &ue->ue_miibus, ifp,
+	    uether_ifmedia_upd, ue->ue_methods->ue_mii_sts,
+	    BMSR_DEFCAPMASK, sc->sc_phyno, MII_OFFSET_ANY, 0);
+	mtx_unlock(&Giant);
+	printf("MII ATTACH error: %s\n", (error) ? "yes":"no");
+
 	return 0;
 }
 #endif
+
 /**
  *	lan78xx_start - Starts communication with the LAN78XX95xx chip
  *	@ue: USB ether interface
@@ -797,6 +1345,13 @@ lan78xx_attach_post_sub(struct usb_ether *ue)
 static void
 lan78xx_start(struct usb_ether *ue)
 {
+	struct lan78xx_softc *sc = uether_getsc(ue);
+
+	/*
+	 * start the USB transfers, if not already started:
+	 */
+	usbd_transfer_start(sc->sc_xfer[LAN78XX_BULK_DT_RD]);
+	usbd_transfer_start(sc->sc_xfer[LAN78XX_BULK_DT_WR]);
 }
 
 /**
@@ -814,68 +1369,76 @@ lan78xx_start(struct usb_ether *ue)
 static int
 lan78xx_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 {
-	return 0;
+	struct usb_ether *ue = ifp->if_softc;
+	struct lan78xx_softc *sc;
+	struct ifreq *ifr;
+	int rc;
+	int mask;
+	int reinit;
+	
+	if (cmd == SIOCSIFCAP) {
+
+		sc = uether_getsc(ue);
+		ifr = (struct ifreq *)data;
+
+		LAN78XX_LOCK(sc);
+
+		rc = 0;
+		reinit = 0;
+
+		mask = ifr->ifr_reqcap ^ ifp->if_capenable;
+
+		/* Modify the RX CSUM enable bits */
+		if ((mask & IFCAP_RXCSUM) != 0 &&
+		    (ifp->if_capabilities & IFCAP_RXCSUM) != 0) {
+			ifp->if_capenable ^= IFCAP_RXCSUM;
+			
+			if (ifp->if_drv_flags & IFF_DRV_RUNNING) {
+				ifp->if_drv_flags &= ~IFF_DRV_RUNNING;
+				reinit = 1;
+			}
+		}
+		
+		LAN78XX_UNLOCK(sc);
+		if (reinit)
+#if __FreeBSD_version > 1000000
+			uether_init(ue);
+#else
+			ifp->if_init(ue);
+#endif
+
+	} else {
+		rc = uether_ioctl(ifp, cmd, data);
+	}
+
+	return (rc);
 }
 
 /**
- *	lan78xx_init - Initialises the LAN95xx chip
- *	@ue: USB ether interface
- *
- *	Called when the interface is brought up (i.e. ifconfig ue0 up), this
- *	initialise the interface and the rx/tx pipes.
+ *	lan78xx_reset - Reset the SMSC chip
+ *	@sc: device soft context
  *
  *	LOCKING:
  *	Should be called with the SMSC lock held.
  */
 static void
-lan78xx_init(struct usb_ether *ue)
+lan78xx_reset(struct lan78xx_softc *sc)
 {
-}
+	struct usb_config_descriptor *cd;
+	usb_error_t err;
 
-/**
- *	lan78xx_phy_init - Initialises the in-built SMSC phy
- *	@sc: driver soft context
- *
- *	Resets the PHY part of the chip and then initialises it to default
- *	values.  The 'link down' and 'auto-negotiation complete' interrupts
- *	from the PHY are also enabled, however we don't monitor the interrupt
- *	endpoints for the moment.
- *
- *	RETURNS:
- *	Returns 0 on success or EIO if failed to reset the PHY.
- */
-//static int
-//lan78xx_phy_init(struct lan78xx_softc *sc)
-//{
-//	return 0;
-//}
+	cd = usbd_get_config_descriptor(sc->sc_ue.ue_udev);
 
+	err = usbd_req_set_config(sc->sc_ue.ue_udev, &sc->sc_mtx,
+	                          cd->bConfigurationValue);
+	if (err)
+		lan78xx_warn_printf(sc, "reset failed (ignored)\n");
 
-/**
- *	lan78xx_stop - Stops communication with the LAN95xx chip
- *	@ue: USB ether interface
- *
- *	
- *
- */
-static void
-lan78xx_stop(struct usb_ether *ue)
-{
-}
+	/* Wait a little while for the chip to get its brains in order. */
+	uether_pause(&sc->sc_ue, hz / 100);
 
-
-/**
- *	lan78xx_tick - Called periodically to monitor the state of the LAN95xx chip
- *	@ue: USB ether interface
- *
- *	Simply calls the mii status functions to check the state of the link.
- *
- *	LOCKING:
- *	Should be called with the SMSC lock held.
- */
-static void
-lan78xx_tick(struct usb_ether *ue)
-{
+	/* Reinitialize controller to achieve full reset. */
+	lan78xx_chip_init(sc);
 }
 
 /**
@@ -886,11 +1449,40 @@ lan78xx_tick(struct usb_ether *ue)
  *	select group of m'cast mac addresses or just the devices mac address.
  *
  *	LOCKING:
- *	Should be called with the SMSC lock held.
+ *	Should be called with the LAN78XX lock held.
  */
 static void
 lan78xx_setmulti(struct usb_ether *ue)
 {
+	struct lan78xx_softc *sc = uether_getsc(ue);
+	lan78xx_dbg_printf(sc, "Calling lan78xx_ifmedia_upd.\n");
+	struct ifnet *ifp = uether_getifp(ue);
+	//struct ifmultiaddr *ifma;
+	//uint32_t hashtbl[2] = { 0, 0 };
+	//uint32_t hash;
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	sc->sc_rfe_ctl &= ~(LAN78XX_RFE_CTL_UCAST_EN_ | LAN78XX_RFE_CTL_MCAST_EN_ |
+		LAN78XX_RFE_CTL_DA_PERFECT_ | LAN78XX_RFE_CTL_MCAST_HASH_);
+
+	// TODO: empty ptable
+	// TODO: empty mhashtable
+
+	if (ifp->if_flags & IFF_PROMISC) {
+		lan78xx_dbg_printf(sc, "promiscuous mode enabled\n");
+		sc->sc_rfe_ctl |= LAN78XX_RFE_CTL_MCAST_EN_ | LAN78XX_RFE_CTL_UCAST_EN_;
+	} else if (ifp->if_flags & IFF_ALLMULTI){
+		lan78xx_dbg_printf(sc, "receive all multicast enabled\n");
+		sc->sc_rfe_ctl |= LAN78XX_RFE_CTL_MCAST_EN_;
+	} else {
+		//TODO: write ptable and hashtables...
+	}
+
+	lan78xx_dbg_printf(sc, "TEST: for now we just enable promiscuous mode\n");
+	sc->sc_rfe_ctl |= LAN78XX_RFE_CTL_MCAST_EN_ | LAN78XX_RFE_CTL_UCAST_EN_;
+
+	lan78xx_write_reg(sc, LAN78XX_RFE_CTL, sc->sc_rfe_ctl);
 }
 
 /**
@@ -898,13 +1490,62 @@ lan78xx_setmulti(struct usb_ether *ue)
  *	@ue: usb ethernet device context
  *
  *	LOCKING:
- *	Should be called with the SMSC lock held.
+ *	Should be called with the LAN78XX lock held.
  */
 static void
 lan78xx_setpromisc(struct usb_ether *ue)
 {
+	struct lan78xx_softc *sc = uether_getsc(ue);
+	struct ifnet *ifp = uether_getifp(ue);
+
+	lan78xx_dbg_printf(sc, "promiscuous mode %sabled\n",
+	                (ifp->if_flags & IFF_PROMISC) ? "en" : "dis");
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	if (ifp->if_flags & IFF_PROMISC)
+		sc->sc_rfe_ctl |= LAN78XX_RFE_CTL_MCAST_EN_ | LAN78XX_RFE_CTL_UCAST_EN_;
+	else
+		sc->sc_rfe_ctl &= ~(LAN78XX_RFE_CTL_MCAST_EN_);
+
+	lan78xx_write_reg(sc, LAN78XX_RFE_CTL, sc->sc_rfe_ctl);
 }
 
+/**
+ *	lan78xx_sethwcsum - Enable or disable H/W UDP and TCP checksumming
+ *	@sc: driver soft context
+ *
+ *	LOCKING:
+ *	Should be called with the LAN78XX lock held.
+ *
+ *	RETURNS:
+ *	Returns 0 on success or a negative error code.
+ */
+static int lan78xx_sethwcsum(struct lan78xx_softc *sc)
+{
+	struct ifnet *ifp = uether_getifp(&sc->sc_ue);
+	int err;
+
+	if (!ifp)
+		return (-EIO);
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+	// TODO: for now these are just disabled! Enable them in the future.
+	
+	sc->sc_rfe_ctl &= ~(LAN78XX_RFE_CTL_IGMP_COE_ | LAN78XX_RFE_CTL_ICMP_COE_);
+	sc->sc_rfe_ctl &= ~(LAN78XX_RFE_CTL_TCPUDP_COE_ | LAN78XX_RFE_CTL_IP_COE_);
+
+	sc->sc_rfe_ctl &= ~LAN78XX_RFE_CTL_VLAN_FILTER_;
+
+	err = lan78xx_write_reg(sc, LAN78XX_RFE_CTL, sc->sc_rfe_ctl);
+
+	if (err != 0) {
+		lan78xx_warn_printf(sc, "failed to write LAN78XX_RFE_CTL (err=%d)\n", err);
+		return (err);
+	}
+
+	return (0);
+}
 
 /**
  *	lan78xx_ifmedia_upd - Set media options
@@ -922,7 +1563,134 @@ lan78xx_setpromisc(struct usb_ether *ue)
 static int
 lan78xx_ifmedia_upd(struct ifnet *ifp)
 {
-	return 0;
+	struct lan78xx_softc *sc = ifp->if_softc;
+	lan78xx_dbg_printf(sc, "Calling lan78xx_ifmedia_upd.\n");
+	struct mii_data *mii = uether_getmii(&sc->sc_ue);
+	struct mii_softc *miisc;
+	int err;
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	LIST_FOREACH(miisc, &mii->mii_phys, mii_list)
+		PHY_RESET(miisc);
+	err = mii_mediachg(mii);
+	return (err);
+}
+
+/**
+ *	lan78xx_init - Initialises the LAN95xx chip
+ *	@ue: USB ether interface
+ *
+ *	Called when the interface is brought up (i.e. ifconfig ue0 up), this
+ *	initialise the interface and the rx/tx pipes.
+ *
+ *	LOCKING:
+ *	Should be called with the LAN78XX lock held.
+ */
+static void
+lan78xx_init(struct usb_ether *ue)
+{
+	struct lan78xx_softc *sc = uether_getsc(ue);
+	lan78xx_dbg_printf(sc, "Calling lan78xx_init.\n");
+	struct ifnet *ifp = uether_getifp(ue);
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	if (lan78xx_setmacaddress(sc, IF_LLADDR(ifp)))
+		lan78xx_dbg_printf(sc, "setting MAC address failed\n");
+
+	if ((ifp->if_drv_flags & IFF_DRV_RUNNING) != 0)
+		return;
+
+	/* Cancel pending I/O */
+	lan78xx_stop(ue);
+#if __FreeBSD_version <= 1000000
+	/* On earlier versions this was the first place we could tell the system
+	 * that we supported h/w csuming, however this is only called after the
+	 * the interface has been brought up - not ideal.  
+	 */
+	if (!(ifp->if_capabilities & IFCAP_RXCSUM)) {
+		ifp->if_capabilities |= IFCAP_RXCSUM;
+		ifp->if_capenable |= IFCAP_RXCSUM;
+		ifp->if_hwassist = 0;
+	}
+	
+	/* TX checksuming is disabled for now
+	ifp->if_capabilities |= IFCAP_TXCSUM;
+	ifp->if_capenable |= IFCAP_TXCSUM;
+	ifp->if_hwassist = CSUM_TCP | CSUM_UDP;
+	*/
+#endif
+
+	/* Reset the ethernet interface. */
+	lan78xx_reset(sc);
+
+	/* Load the multicast filter. */
+	lan78xx_setmulti(ue);
+
+	/* TCP/UDP checksum offload engines. */
+	lan78xx_sethwcsum(sc);
+
+	usbd_xfer_set_stall(sc->sc_xfer[LAN78XX_BULK_DT_WR]);
+
+	/* Indicate we are up and running. */
+	ifp->if_drv_flags |= IFF_DRV_RUNNING;
+
+	/* Switch to selected media. */
+	lan78xx_ifmedia_upd(ifp);
+	lan78xx_start(ue);
+}
+
+
+/**
+ *	lan78xx_stop - Stops communication with the LAN78xx chip
+ *	@ue: USB ether interface
+ *
+ *	
+ *
+ */
+static void
+lan78xx_stop(struct usb_ether *ue)
+{
+	struct lan78xx_softc *sc = uether_getsc(ue);
+	struct ifnet *ifp = uether_getifp(ue);
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	ifp->if_drv_flags &= ~(IFF_DRV_RUNNING | IFF_DRV_OACTIVE);
+	sc->sc_flags &= ~LAN78XX_FLAG_LINK;
+
+	/*
+	 * stop all the transfers, if not already stopped:
+	 */
+	usbd_transfer_stop(sc->sc_xfer[LAN78XX_BULK_DT_WR]);
+	usbd_transfer_stop(sc->sc_xfer[LAN78XX_BULK_DT_RD]);
+}
+
+
+/**
+ *	lan78xx_tick - Called periodically to monitor the state of the LAN95xx chip
+ *	@ue: USB ether interface
+ *
+ *	Simply calls the mii status functions to check the state of the link.
+ *
+ *	LOCKING:
+ *	Should be called with the LAN78XX lock held.
+ */
+static void
+lan78xx_tick(struct usb_ether *ue)
+{
+
+	struct lan78xx_softc *sc = uether_getsc(ue);
+	struct mii_data *mii = uether_getmii(&sc->sc_ue);
+
+	LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
+
+	mii_tick(mii);
+	if ((sc->sc_flags & LAN78XX_FLAG_LINK) == 0) {
+		lan78xx_miibus_statchg(ue->ue_dev);
+		if ((sc->sc_flags & LAN78XX_FLAG_LINK) != 0)
+			lan78xx_start(ue);
+	}
 }
 
 /**
@@ -939,6 +1707,14 @@ lan78xx_ifmedia_upd(struct ifnet *ifp)
 static void
 lan78xx_ifmedia_sts(struct ifnet *ifp, struct ifmediareq *ifmr)
 {
+	struct lan78xx_softc *sc = ifp->if_softc;
+	struct mii_data *mii = uether_getmii(&sc->sc_ue);
+
+	LAN78XX_LOCK(sc);
+	mii_pollstat(mii);
+	ifmr->ifm_active = mii->mii_media_active;
+	ifmr->ifm_status = mii->mii_media_status;
+	LAN78XX_UNLOCK(sc);
 }
 
 /**
@@ -1043,13 +1819,13 @@ static device_method_t lan78xx_methods[] = {
 	DEVMETHOD(device_detach, lan78xx_detach),
 
 	///* bus interface */
-	//DEVMETHOD(bus_print_child, bus_generic_print_child),
-	//DEVMETHOD(bus_driver_added, bus_generic_driver_added),
+	DEVMETHOD(bus_print_child, bus_generic_print_child),
+	DEVMETHOD(bus_driver_added, bus_generic_driver_added),
 
 	///* MII interface */
-	//DEVMETHOD(miibus_readreg, lan78xx_miibus_readreg),
-	//DEVMETHOD(miibus_writereg, lan78xx_miibus_writereg),
-	//DEVMETHOD(miibus_statchg, lan78xx_miibus_statchg),
+	DEVMETHOD(miibus_readreg, lan78xx_miibus_readreg),
+	DEVMETHOD(miibus_writereg, lan78xx_miibus_writereg),
+	DEVMETHOD(miibus_statchg, lan78xx_miibus_statchg),
 
 	DEVMETHOD_END
 };
@@ -1063,11 +1839,11 @@ static driver_t lan78xx_driver = {
 static devclass_t lan78xx_devclass;
 
 DRIVER_MODULE(lan78xx, uhub, lan78xx_driver, lan78xx_devclass, NULL, 0);
-//DRIVER_MODULE(miibus, lan78xx, miibus_driver, miibus_devclass, 0, 0);
+DRIVER_MODULE(miibus, lan78xx, miibus_driver, miibus_devclass, 0, 0);
 MODULE_DEPEND(lan78xx, uether, 1, 1, 1);
 MODULE_DEPEND(lan78xx, usb, 1, 1, 1);
 MODULE_DEPEND(lan78xx, ether, 1, 1, 1);
-//MODULE_DEPEND(lan78xx, miibus, 1, 1, 1);
+MODULE_DEPEND(lan78xx, miibus, 1, 1, 1);
 MODULE_VERSION(lan78xx, 1);
 USB_PNP_HOST_INFO(lan78xx_devs);
 

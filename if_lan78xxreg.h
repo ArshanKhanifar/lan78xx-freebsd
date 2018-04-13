@@ -1,11 +1,23 @@
-#define LAN78XX_ID_REV           (0x000)
+#define BIT(n)   ((1) << (n))
 
-#define INT_STS          (0x00C)
+#define LAN78XX_ID_REV           (0x000)
+#define LAN78XX_ID_REV_CHIP_ID_MASK_           (0xFFFF0000UL)
+#define LAN78XX_ID_REV_CHIP_REV_MASK_          (0x0000FFFFUL)
+
+#define LAN78XX_INT_STS          (0x00C)
+#define LAN78XX_INT_STS_CLEAR_ALL_      (0xffffffff)
+
 #define LAN78XX_HW_CFG           (0x010)
 #define LAN_78XX_PMT_CTL          (0x014)
 #define GPIO_CFG0        (0x018)
 #define GPIO_CFG1        (0x01C)
 #define GPIO_WAKE        (0x020)
+
+#define LAN78XX_RX_CMD_A_RED_ (0x00400000)
+#define LAN78XX_RX_CMD_A_LEN_MASK_ (0x00003FFF)
+
+#define LAN78XX_DP_SEL_VHF_HASH_LEN (16)
+
 #define DP_SEL           (0x024)
 #define DP_CMD           (0x028)
 #define DP_ADDR          (0x02C)
@@ -63,23 +75,79 @@
 #define SW_GP_1          (0x06C)
 #define SW_GP_2          (0x070)
 #define SW_GP_3          (0x074)
-#define USB_CFG0         (0x080)
+
+#define LAN78XX_SS_USB_PKT_SIZE (1024)
+#define LAN78XX_HS_USB_PKT_SIZE (512)
+#define LAN78XX_FS_USB_PKT_SIZE (64)
+
+#define LAN78XX_MAX_RX_FIFO_SIZE  (12 * 1024)
+#define LAN78XX_MAX_TX_FIFO_SIZE  (12 * 1024)
+#define LAN78XX_DEFAULT_BURST_CAP_SIZE (LAN78XX_MAX_TX_FIFO_SIZE)
+
+#define LAN78XX_DEFAULT_BULK_IN_DELAY (0x0800)
+
+#define LAN78XX_USB_CFG0   	 (0x080)
+#define LAN78XX_USB_CFG_BIR_ (0x040)
+#define LAN78XX_USB_CFG_BCE_ (0x020)
+
 #define USB_CFG1         (0x084)
 #define USB_CFG2         (0x088)
 #define LAN78XX_BURST_CAP        (0x090)
 #define LAN78XX_BULK_IN_DLY      (0x094)
-#define INT_EP_CTL       (0x098)
+
+#define LAN78XX_INT_EP_CTL       (0x098)
+#define LAN78XX_INT_ENP_PHY_INT	 BIT(17)
+
 #define PIPE_CTL         (0x09C)
 #define U1_LATENCY       (0x0A0)
 #define U2_LATENCY       (0x0A4)
 #define USB_STATUS       (0x0A8)
-#define RFE_CTL          (0x0B0)
+
+#define LAN78XX_RFE_CTL          (0x0B0)
+#define LAN78XX_RFE_CTL_IGMP_COE_          (0x4000)
+#define LAN78XX_RFE_CTL_ICMP_COE_          (0x2000)
+#define LAN78XX_RFE_CTL_TCPUDP_COE_        (0x1000)
+#define LAN78XX_RFE_CTL_IP_COE_            (0x800)
+#define LAN78XX_RFE_CTL_BCAST_EN_          (0x400)
+#define LAN78XX_RFE_CTL_MCAST_EN_          (0x200)
+#define LAN78XX_RFE_CTL_UCAST_EN_          (0x100)
+#define LAN78XX_RFE_CTL_VLAN_FILTER_       (0x020)
+#define LAN78XX_RFE_CTL_MCAST_HASH_        (0x008)
+#define LAN78XX_RFE_CTL_DA_PERFECT_        (0x002)
+
+
+/* Registers on the phy, accessed via MII/MDIO */
+#define LAN78XX_PHY_INTR_STAT          (25)
+#define LAN78XX_PHY_INTR_MASK          (26)
+#define LAN78XX_EXT_PAGE_ACCESS		   (0x1F)
+#define LAN78XX_EXT_PAGE_SPACE_0	   (0x0000)
+#define LAN78XX_EXT_PAGE_SPACE_1	   (0x0001)
+#define LAN78XX_EXT_PAGE_SPACE_2	   (0x0002)
+
+/* Extended Register Page 1 space */
+#define LAN78XX_EXT_MODE_CTRL		   		  (0x0013)
+#define LAN78XX_EXT_MODE_CTRL_MDIX_MASK_	  (0x000C)
+#define LAN78XX_EXT_MODE_CTRL_AUTO_MDIX_	  (0x0000)
+
+#define LAN78XX_PHY_INTR_LINK_CHANGE   (0x1U << 13)
+#define LAN78XX_PHY_INTR_ANEG_COMP     (0x1U << 10)
+
 #define VLAN_TYPE        (0x0B4)
-#define FCT_RX_CTL       (0x0C0)
-#define FCT_TX_CTL       (0x0C4)
-#define FCT_RX_FIFO_END  (0x0C8)
-#define FCT_TX_FIFO_END  (0x0CC)
-#define FCT_FLOW         (0x0D0)
+
+#define LAN78XX_FCT_RX_CTL       (0x0C0)
+#define LAN78XX_FCT_TX_CTL       (0x0C4)
+#define LAN78XX_FCT_TX_CTL_EN_		(0x80000000)
+
+
+#define LAN78XX_FCT_FLOW         (0x0D0)
+
+
+#define LAN78XX_FCT_RX_FIFO_END        (0x0C8)
+#define LAN78XX_FCT_RX_FIFO_END_MASK_  (0x0000007F)
+
+#define LAN78XX_FCT_TX_FIFO_END  	   (0x0CC)
+#define LAN78XX_FCT_TX_FIFO_END_MASK_  (0x0000003F)
+
 #define RX_DP_STOR       (0x0D4)
 #define TX_DP_STOR       (0x0D8)
 #define LTM_BELT_IDLE0   (0x0E0)
@@ -88,16 +156,39 @@
 #define LTM_BELT_ACT1    (0x0EC)
 #define LTM_INACTIVE0    (0x0F0)
 #define LTM_INACTIVE1    (0x0F4)
-#define MAC_CR           (0x100)
-#define MAC_RX           (0x104)
-#define MAC_TX           (0x108)
-#define FLOW             (0x10C)
+
+#define LAN78XX_MAC_CR           (0x100)
+#define LAN78XX_MAC_CR_AUTO_DUPLEX_		(0x00001000)
+#define LAN78XX_MAC_CR_AUTO_SPEED_		(0x00000800)
+
+
+#define LAN78XX_MAC_RX           (0x104)
+#define LAN78XX_MAC_RX_MAX_FR_SIZE_MASK_ (0x3FFF0000)
+#define LAN78XX_MAC_RX_MAX_FR_SIZE_SHIFT_ (16)
+#define LAN78XX_MAC_RX_EN_       (0x01)
+
+
+
+#define LAN78XX_MAC_TX           (0x108)
+#define LAN78XX_MAC_TX_TXEN_			(0x00000001)
+
+#define LAN78XX_FLOW             (0x10C)
+#define LAN78XX_FLOW_CR_TX_FCEN_ (0x40000000)
+#define LAN78XX_FLOW_CR_RX_FCEN_ (0x20000000)
+
+
+
+
+
 #define RAND_SEED        (0x110)
 #define ERR_STS          (0x114)
 #define LAN78XX_RX_ADDRH         (0x118)
 #define LAN78XX_RX_ADDRL         (0x11C)
-#define MII_ACCESS       (0x120)
-#define MII_DATA         (0x124)
+#define LAN78XX_MII_ACCESS       (0x120)
+#define LAN78XX_MII_BUSY_		 (0x1UL << 0)
+#define LAN78XX_MII_READ_		 (0x0UL << 1)
+#define LAN78XX_MII_WRITE_		 (0x1UL << 1)
+#define LAN78XX_MII_DATA         (0x124)
 #define EEE_TX_LPI_REQUEST_DELAY_CNT  (0x130)
 #define EEE_TW_TX_SYS                 (0x134)
 #define EEE_TX_LPI_AUTO_REMOVAL_DELAY (0x138)
@@ -196,11 +287,13 @@ struct lan78xx_softc {
 
 	/* The following stores the settings in the mac control (MAC_CSR) register */
 	uint32_t          sc_mac_csr;
+	uint32_t          sc_rfe_ctl;
+	uint32_t          sc_mdix_ctl;
 	uint32_t          sc_rev_id;
+	uint32_t          sc_mchash_table[LAN78XX_DP_SEL_VHF_HASH_LEN];
 
 	uint32_t          sc_flags;
 #define	LAN78XX_FLAG_LINK      0x0001
-#define	LAN_FLAG_LAN9514   0x1000	/* LAN9514 */
 };
 
 /* USB Vendor Requests */
@@ -231,7 +324,11 @@ struct lan78xx_softc {
 #define LAN78XX_E2P_CMD_TIMEOUT     (0x1UL << 10)
 #define LAN78XX_E2P_CMD_ADDR_MASK   0x000001FFUL
 
-#define LAN78XX_HW_CFG_MEF             (0x1UL << 4)
+#define LAN78XX_HW_CFG_LED3_EN_	   	   (0x00800000)
+#define LAN78XX_HW_CFG_LED2_EN_	   	   (0x00400000)
+#define LAN78XX_HW_CFG_LED1_EN_	   	   (0x00200000)
+#define LAN78XX_HW_CFG_LEDO_EN_	   	   (0x00100000)
+#define LAN78XX_HW_CFG_MEF_            (0x1UL << 4)
 #define LAN78XX_HW_CFG_ETC             (0x1UL << 3)
 #define LAN78XX_HW_CFG_LRST            (0x1UL << 1)    /* Lite reset */
 #define LAN78XX_HW_CFG_SRST            (0x1UL << 0)
