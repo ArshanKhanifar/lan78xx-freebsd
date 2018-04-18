@@ -576,7 +576,7 @@ lan78xx_miibus_readreg(device_t dev, int phy, int reg) {
 		goto done;
 	}
 
-	addr = (phy << 11) | (reg << 6) | LAN78XX_MII_READ_;
+	addr = (phy << 11) | (reg << 6) | LAN78XX_MII_READ_ | LAN78XX_MII_BUSY_;
 	lan78xx_write_reg(sc, LAN78XX_MII_ACCESS, addr);
 
 	if (lan78xx_wait_for_bits(sc, LAN78XX_MII_ACCESS, LAN78XX_MII_BUSY_) != 0) {
@@ -631,7 +631,7 @@ lan78xx_miibus_writereg(device_t dev, int phy, int reg, int val)
 	val = htole32(val);
 	lan78xx_write_reg(sc, LAN78XX_MII_DATA, val);
 
-	addr = (phy << 11) | (reg << 6) | LAN78XX_MII_WRITE_;
+	addr = (phy << 11) | (reg << 6) | LAN78XX_MII_WRITE_ | LAN78XX_MII_BUSY_;
 	lan78xx_write_reg(sc, LAN78XX_MII_ACCESS, addr);
 
 	if (lan78xx_wait_for_bits(sc, LAN78XX_MII_ACCESS, LAN78XX_MII_BUSY_) != 0)
@@ -675,9 +675,6 @@ lan78xx_miibus_statchg(device_t dev)
 
 	/* Use the MII status to determine link status */
 	sc->sc_flags &= ~LAN78XX_FLAG_LINK;
-
-	printf("mii->mii_media_status: 0x%08x\n", mii->mii_media_status);
-
 	if ((mii->mii_media_status & (IFM_ACTIVE | IFM_AVALID)) ==
 	    (IFM_ACTIVE | IFM_AVALID)) {
 		lan78xx_dbg_printf(sc, "media is active\n");
@@ -689,7 +686,6 @@ lan78xx_miibus_statchg(device_t dev)
 				break;
 			case IFM_1000_T:
 				sc->sc_flags |= LAN78XX_FLAG_LINK;
-				/* Gigabit ethernet not supported by chipset */
 				lan78xx_dbg_printf(sc, "Gigabit ethernet\n");
 				break;
 			default:
@@ -780,7 +776,7 @@ static int
 lan78xx_phy_init(struct lan78xx_softc *sc)
 {
 	lan78xx_dbg_printf(sc, "Initializing PHY.\n");
-	int bmcr;
+	uint16_t bmcr;
 	usb_ticks_t start_ticks;
 	const usb_ticks_t max_ticks = USB_MS_TO_TICKS(1000);
 
@@ -793,10 +789,10 @@ lan78xx_phy_init(struct lan78xx_softc *sc)
 	do {
 		uether_pause(&sc->sc_ue, hz / 100);
 		bmcr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR);
-	} while ((bmcr & MII_BMCR) && ((ticks - start_ticks) < max_ticks));
+	} while ((bmcr & BMCR_RESET) && ((ticks - start_ticks) < max_ticks));
 
 	if (((usb_ticks_t)(ticks - start_ticks)) >= max_ticks) {
-		lan78xx_err_printf(sc, "PHY reset timed-out");
+		lan78xx_err_printf(sc, "PHY reset timed-out\n");
 		return (EIO);
 	}
 
@@ -813,19 +809,11 @@ lan78xx_phy_init(struct lan78xx_softc *sc)
 	                     ANAR_FC |
 	                     ANAR_PAUSE_ASYM);
 
-
 	/* Restart auto-negotation */
-	bmcr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR);
 	bmcr |= BMCR_STARTNEG;
 	bmcr |= BMCR_AUTOEN;
 	lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR, bmcr);
-	
 	bmcr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR);
-	printf("BMCR REGISTER after write: 0x%08x\n", bmcr);
-
-	uint16_t bmsr = lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMSR);
-	printf("BMSR REGISTER: 0x%08x\n", bmsr);
-
 	return (0);
 }
 
@@ -843,7 +831,6 @@ lan78xx_phy_init(struct lan78xx_softc *sc)
 static int
 lan78xx_chip_init(struct lan78xx_softc *sc)
 {
-	lan78xx_dbg_printf(sc, "Calling lan78xx_chip_init.\n");
 	int err;
 	int locked;
 	uint32_t buf;
@@ -904,7 +891,6 @@ lan78xx_chip_init(struct lan78xx_softc *sc)
 
 	/* Set the default bulk in delay (same value from Linux driver) */
 	lan78xx_write_reg(sc, LAN78XX_BULK_IN_DLY, LAN78XX_DEFAULT_BULK_IN_DELAY);
-
 
 	/* Multiple ethernet frames per USB packets */
 	err = lan78xx_read_reg(sc, LAN78XX_HW_CFG, &buf);
@@ -1146,24 +1132,27 @@ tr_setup:
 static void
 lan78xx_bulk_write_callback(struct usb_xfer *xfer, usb_error_t error)
 {
-	// will figure out
-	// let's figure this out! hehehe
-
 	struct lan78xx_softc *sc = usbd_xfer_softc(xfer);
 	struct ifnet *ifp = uether_getifp(&sc->sc_ue);
 	struct usb_page_cache *pc;
 	struct mbuf *m;
-	uint32_t frm_len = 0;
+	uint32_t frm_len = 0, tx_cmd_a = 0, tx_cmd_b = 0;
 	int nframes;
-
 	switch (USB_GET_STATE(xfer)) {
 	case USB_ST_TRANSFERRED:
+		printf("USB TRANSFER status: USB_ST_TRANSFERRED\n");
 		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
 		/* FALLTHROUGH */
 	case USB_ST_SETUP:
+		printf("USB TRANSFER status: USB_ST_SETUP\n");
 tr_setup:
 		if ((sc->sc_flags & LAN78XX_FLAG_LINK) == 0 ||
 			(ifp->if_drv_flags & IFF_DRV_OACTIVE) != 0) {
+			printf("sc->sc_flags & LAN78XX_FLAG_LINK: %d\n",
+							(sc->sc_flags & LAN78XX_FLAG_LINK));
+			printf("ifp->if_drv_flags & IFF_DRV_OACTIVE: %d\n",
+							(ifp->if_drv_flags & IFF_DRV_OACTIVE));
+			printf("USB TRANSFER not sending: no link or controller is busy \n");
 			/* Don't send anything if there is no link or controller is busy. */
 			return;
 		}
@@ -1176,8 +1165,25 @@ tr_setup:
 			    nframes);
 			frm_len = 0;
 			pc = usbd_xfer_get_frame(xfer, nframes);
-			/* Linux driver doesn't seem to be prefixing any status words. */
-		
+			
+			/* Each frame is prefixed with two 32-bit values describing the
+			 * length of the packet and buffer.
+			 */
+			tx_cmd_a = (m->m_pkthdr.len & LAN78XX_TX_CMD_A_LEN_MASK_) |
+									LAN78XX_TX_CMD_A_FCS_;
+			tx_cmd_a = htole32(tx_cmd_a);
+			// TODO: ADD CHECKSUM BITS LATER
+			usbd_copy_in(pc, 0, &tx_cmd_a, sizeof(tx_cmd_a));
+			
+			tx_cmd_b = 0;
+			// TODO: set the tcp Large Segment Offload (LSO) bit here
+			// TODO: set the MSS bit here (if LSO is enabled)
+			// TODO: set the vlan tag here (have to check if its enabled)
+			tx_cmd_b = htole32(tx_cmd_b);
+			usbd_copy_in(pc, 4, &tx_cmd_b, sizeof(tx_cmd_b));
+			
+			frm_len += 8;
+			/* Next copy in the actual packet */
 			usbd_m_copy_in(pc, frm_len, m, 0, m->m_pkthdr.len);
 			frm_len += m->m_pkthdr.len;
 
@@ -1191,7 +1197,9 @@ tr_setup:
 			usbd_xfer_set_frame_len(xfer, nframes, frm_len);
 		}
 
+		printf("USB TRANSFER nframes: %d\n", nframes);
 		if (nframes != 0) {
+			printf("USB TRANSFER submit attempt\n");
 			usbd_xfer_set_frames(xfer, nframes);
 			usbd_transfer_submit(xfer);
 			ifp->if_drv_flags |= IFF_DRV_OACTIVE;
@@ -1227,6 +1235,7 @@ lan78xx_attach_post(struct usb_ether *ue)
 	struct lan78xx_softc *sc = uether_getsc(ue);
 	uint32_t mac_h, mac_l;
 	//int err;
+	lan78xx_dbg_printf(sc, "Calling lan78xx_attach_post.\n");
 
 	/* Setup some of the basics */
 	sc->sc_phyno = 1;
@@ -1271,6 +1280,8 @@ lan78xx_attach_post(struct usb_ether *ue)
 			sc->sc_ue.ue_eaddr[0] &= ~0x01;     /* unicast */
 			sc->sc_ue.ue_eaddr[0] |=  0x02;     /* locally administered */
 		}
+	} else {
+		lan78xx_dbg_printf(sc, "MAC assigned from registers\n");
 	}
 	
 	/* Initialise the chip for the first time */
@@ -1324,12 +1335,13 @@ lan78xx_attach_post_sub(struct usb_ether *ue)
 
 	ifp->if_capenable = ifp->if_capabilities;
 
+	printf("MII attach before\n");
 	mtx_lock(&Giant);
 	error = mii_attach(ue->ue_dev, &ue->ue_miibus, ifp,
 	    uether_ifmedia_upd, ue->ue_methods->ue_mii_sts,
 	    BMSR_DEFCAPMASK, sc->sc_phyno, MII_OFFSET_ANY, 0);
 	mtx_unlock(&Giant);
-	printf("MII ATTACH error: %s\n", (error) ? "yes":"no");
+	printf("MII attach after\n");
 
 	return 0;
 }
