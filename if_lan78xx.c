@@ -47,26 +47,25 @@ __FBSDID("$FreeBSD$");
  *
  */
 
-#include <sys/stdint.h>
-#include <sys/stddef.h>
 #include <sys/param.h>
-#include <sys/queue.h>
-#include <sys/types.h>
-#include <sys/systm.h>
-#include <sys/kernel.h>
 #include <sys/bus.h>
-#include <sys/module.h>
-#include <sys/lock.h>
-#include <sys/mutex.h>
-#include <sys/condvar.h>
-#include <sys/socket.h>
-#include <sys/sysctl.h>
-#include <sys/sx.h>
-#include <sys/unistd.h>
 #include <sys/callout.h>
+#include <sys/condvar.h>
+#include <sys/kernel.h>
+#include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/module.h>
+#include <sys/mutex.h>
 #include <sys/priv.h>
+#include <sys/queue.h>
 #include <sys/random.h>
+#include <sys/socket.h>
+#include <sys/stddef.h>
+#include <sys/stdint.h>
+#include <sys/sx.h>
+#include <sys/sysctl.h>
+#include <sys/systm.h>
+#include <sys/unistd.h>
 
 #include <net/if.h>
 #include <net/if_var.h>
@@ -75,7 +74,6 @@ __FBSDID("$FreeBSD$");
 #include <netinet/ip.h>
 
 #include "opt_platform.h"
-
 
 // TODO: read mac address from device tree.
 #ifdef FDT
@@ -105,6 +103,7 @@ SYSCTL_INT(_hw_usb_lan78xx, OID_AUTO, debug, CTLFLAG_RWTUN, &lan78xx_debug, 0,
     "Debug level");
 #endif
 
+// TODO: TCP/UDP packets don't work when RX csum enabled.
 #define LAN78XX_DEFAULT_RX_CSUM_ENABLE (false)
 #define LAN78XX_DEFAULT_TX_CSUM_ENABLE (false) // TODO: not implemented
 #define LAN78XX_DEFAULT_TSO_CSUM_ENABLE (false) // TODO: not implemented
@@ -143,6 +142,43 @@ static const struct usb_device_id lan78xx_devs[] = {
     
 #define ETHER_IS_VALID(addr) \
     (!ETHER_IS_MULTICAST(addr) && !ETHER_IS_ZERO(addr))
+
+/* USB endpoints. */
+
+enum {
+	LAN78XX_BULK_DT_RD,
+	LAN78XX_BULK_DT_WR,
+	/* the LAN78XX device does support interrupt endpoints,
+	 * but they're not needed as we poll on MII status.
+	 * LAN78XX_INTR_DT_WR,
+	 * LAN78XX_INTR_DT_RD,
+	 */
+	LAN78XX_N_TRANSFER,
+};
+
+struct lan78xx_softc {
+	struct usb_ether  sc_ue;
+	struct mtx		  sc_mtx;
+	struct usb_xfer  *sc_xfer[LAN78XX_N_TRANSFER];
+	int				  sc_phyno;
+
+	/* The following stores the settings in the mac control (MAC_CSR) register */
+	uint32_t		  sc_rfe_ctl;
+	uint32_t		  sc_mdix_ctl;
+	uint32_t		  sc_rev_id;
+	uint32_t		  sc_mchash_table[LAN78XX_DP_SEL_VHF_HASH_LEN];
+	uint32_t		  sc_pfilter_table[LAN78XX_NUM_PFILTER_ADDRS_][2];
+
+	uint32_t		  sc_flags;
+#define LAN78XX_FLAG_LINK	0x0001
+};
+
+#define LAN78XX_IFACE_IDX		0
+
+#define LAN78XX_LOCK(_sc)				mtx_lock(&(_sc)->sc_mtx)
+#define LAN78XX_UNLOCK(_sc)				mtx_unlock(&(_sc)->sc_mtx)
+#define LAN78XX_LOCK_ASSERT(_sc, t)		mtx_assert(&(_sc)->sc_mtx, t)
+
 
 static device_probe_t lan78xx_probe;
 static device_attach_t lan78xx_attach;
@@ -231,7 +267,8 @@ static const struct usb_ether_methods lan78xx_ue_methods = {
  */
 
 static int
-lan78xx_read_reg(struct lan78xx_softc *sc, uint32_t off, uint32_t *data) {
+lan78xx_read_reg(struct lan78xx_softc *sc, uint32_t off, uint32_t *data)
+{
     struct usb_device_request req;
     uint32_t buf;
     usb_error_t err;
@@ -358,7 +395,7 @@ lan78xx_eeprom_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, ui
     val &= ~(LAN78XX_HW_CFG_LEDO_EN_ | LAN78XX_HW_CFG_LED1_EN_);
     err = lan78xx_write_reg(sc, LAN78XX_HW_CFG, val);
 
-    err = lan78xx_wait_for_bits(sc, LAN78XX_E2P_CMD, LAN78XX_E2P_CMD_BUSY);
+    err = lan78xx_wait_for_bits(sc, LAN78XX_E2P_CMD, LAN78XX_E2P_CMD_BUSY_);
 
     if (err != 0) {
         lan78xx_warn_printf(sc, "eeprom busy, failed to read data\n");
@@ -368,7 +405,8 @@ lan78xx_eeprom_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, ui
     /* start reading the bytes, one at a time */
     for (i = 0; i < buflen; i++) {
     
-        val = LAN78XX_E2P_CMD_BUSY | (LAN78XX_E2P_CMD_ADDR_MASK & (off + i));
+        val = LAN78XX_E2P_CMD_BUSY_ | LAN78XX_E2P_CMD_READ_;
+		val |= (LAN78XX_E2P_CMD_ADDR_MASK & (off + i));
         if ((err = lan78xx_write_reg(sc, LAN78XX_E2P_CMD, val)) != 0)
             goto done;
         
@@ -376,13 +414,13 @@ lan78xx_eeprom_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, ui
         do {
             if ((err = lan78xx_read_reg(sc, LAN78XX_E2P_CMD, &val)) != 0)
                 goto done;
-            if (!(val & LAN78XX_E2P_CMD_BUSY) || (val & LAN78XX_E2P_CMD_TIMEOUT))
+            if (!(val & LAN78XX_E2P_CMD_BUSY_) || (val & LAN78XX_E2P_CMD_TIMEOUT_))
                 break;
 
             uether_pause(&sc->sc_ue, hz / 100);
         } while (((usb_ticks_t)(ticks - start_ticks)) < max_ticks);
 
-        if (val & (LAN78XX_E2P_CMD_BUSY | LAN78XX_E2P_CMD_TIMEOUT)) {
+        if (val & (LAN78XX_E2P_CMD_BUSY_ | LAN78XX_E2P_CMD_TIMEOUT_)) {
             lan78xx_warn_printf(sc, "eeprom command failed\n");
             err = USB_ERR_IOERROR;
             break;
@@ -446,7 +484,8 @@ lan78xx_eeprom_read(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16
  *
  */
 static int
-lan78xx_otp_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16_t buflen) {
+lan78xx_otp_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16_t buflen)
+{
     int locked, err;
     uint32_t val;
     uint16_t i;
@@ -512,7 +551,8 @@ done:
  */
 
 static int
-lan78xx_otp_read(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16_t buflen) {
+lan78xx_otp_read(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, uint16_t buflen) 
+{
     uint8_t sig;
     int err;
 
@@ -566,7 +606,21 @@ done:
     return (err);
 }
 
-static int lan78xx_set_rx_max_frame_length(struct lan78xx_softc *sc, int size) {
+/**
+ *  lan78xx_set_rx_max_frame_length
+ *  @sc: driver soft context
+ *  @size: pointer to array contain at least 6 bytes of the mac
+ *
+ *  Sets the maximum frame length to be received. Frames bigger than
+ *  this size are aborted.
+ *
+ *  RETURNS:
+ *  Returns 0 on success or a negative error code.
+ */
+
+static int
+lan78xx_set_rx_max_frame_length(struct lan78xx_softc *sc, int size)
+{
     int err = 0;
     uint32_t buf;
     bool rxenabled;
@@ -587,6 +641,8 @@ static int lan78xx_set_rx_max_frame_length(struct lan78xx_softc *sc, int size) {
     buf |= (((size + 4) << LAN78XX_MAC_RX_MAX_FR_SIZE_SHIFT_) & LAN78XX_MAC_RX_MAX_FR_SIZE_MASK_);
     err = lan78xx_write_reg(sc, LAN78XX_MAC_RX, buf);
     
+	/* If it were enabled before, we enable it back. */
+
     if (rxenabled) {
         buf |= LAN78XX_MAC_RX_EN_;
         err = lan78xx_write_reg(sc, LAN78XX_MAC_RX, buf);
@@ -601,7 +657,7 @@ static int lan78xx_set_rx_max_frame_length(struct lan78xx_softc *sc, int size) {
  *  @phy: the number of phy reading from
  *  @reg: the register address
  *
- *  Attempts to read a phy register over the MII bus.
+ *  Attempts to read a PHY register indirectly through the USB controller registers.
  *
  *  LOCKING:
  *  Takes and releases the device mutex lock if not already held.
@@ -651,7 +707,7 @@ done:
  *  @reg: the register address
  *  @val: the value to write
  *
- *  Attempts to write a phy register over the MII bus.
+ *  Attempts to write to a PHY register through the usb controller registers.
  *
  *  LOCKING:
  *  Takes and releases the device mutex lock if not already held.
@@ -744,7 +800,7 @@ lan78xx_miibus_statchg(device_t dev)
     } 
     /* Lost link, do nothing. */
     if ((sc->sc_flags & LAN78XX_FLAG_LINK) == 0) {
-        //lan78xx_dbg_printf(sc, "link flag not set\n");
+        lan78xx_dbg_printf(sc, "link flag not set\n");
         goto done;
     }
 
@@ -868,13 +924,6 @@ lan78xx_phy_init(struct lan78xx_softc *sc)
     return (0);
 }
 
-/*
- * lan78xx_init_ltm
- * LTM or latency tolerance messaging is a f
- *
- *
- */
-
 
 /**
  *  lan78xx_chip_init - Initialises the chip after power on
@@ -899,9 +948,9 @@ lan78xx_chip_init(struct lan78xx_softc *sc)
         LAN78XX_LOCK(sc);
 
     /* Enter H/W config mode */
-    lan78xx_write_reg(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST);
+    lan78xx_write_reg(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST_);
 
-    if ((err = lan78xx_wait_for_bits(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST)) != 0) {
+    if ((err = lan78xx_wait_for_bits(sc, LAN78XX_HW_CFG, LAN78XX_HW_CFG_LRST_)) != 0) {
         lan78xx_warn_printf(sc, "timed-out waiting for lite reset to complete\n");
         goto init_failed;
     }
@@ -1006,8 +1055,8 @@ lan78xx_chip_init(struct lan78xx_softc *sc)
      */
 
     /* Reset the PHY */
-    lan78xx_write_reg(sc, LAN_78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST);
-    if ((err = lan78xx_wait_for_bits(sc, LAN_78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST)) != 0) {
+    lan78xx_write_reg(sc, LAN78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST_);
+    if ((err = lan78xx_wait_for_bits(sc, LAN78XX_PMT_CTL, LAN78XX_PMT_CTL_PHY_RST_)) != 0) {
         lan78xx_warn_printf(sc, "timed-out waiting for phy reset to complete\n");
         goto init_failed;
     }
