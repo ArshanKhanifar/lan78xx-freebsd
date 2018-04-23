@@ -1,9 +1,11 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2018
- *  Arshan Khanifar <arshankhanifar@gmail.com>.
- * All rights reserved.
+ * Copyright (c) 2018 The FreeBSD Foundation
+ * 
+ * This software was developed by
+ *  Arshan Khanifar <arshankhanifar@gmail.com>
+ * under sponsorship from the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -14,10 +16,10 @@
  *	  notice, this list of conditions and the following disclaimer in the
  *	  documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.	IN NO EVENT SHALL AUTHOR OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
  * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
@@ -217,7 +219,7 @@
 #define LAN78XX_EXT_PAGE_SPACE_1	0x0001
 #define LAN78XX_EXT_PAGE_SPACE_2	0x0002
 
-/* Extended Register Page 1 space */
+/* Extended Register Page 1 Space */
 
 #define LAN78XX_EXT_MODE_CTRL				0x0013
 #define LAN78XX_EXT_MODE_CTRL_MDIX_MASK_	0x000C

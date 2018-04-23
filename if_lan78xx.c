@@ -14,16 +14,17 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
  */
 
 #include <sys/cdefs.h>
@@ -380,8 +381,7 @@ lan78xx_eeprom_read_raw(struct lan78xx_softc *sc, uint16_t off, uint8_t *buf, ui
 {
     usb_ticks_t start_ticks;
     const usb_ticks_t max_ticks = USB_MS_TO_TICKS(1000);
-    int err;
-    int locked;
+    int err, locked;
     uint32_t val, saved;
     uint16_t i;
 
@@ -671,8 +671,9 @@ lan78xx_miibus_readreg(device_t dev, int phy, int reg) {
 
     struct lan78xx_softc *sc = device_get_softc(dev);
     int locked;
-    uint32_t addr;
-    uint32_t val = 0;
+    uint32_t addr, val;
+
+    val = 0;
     locked = mtx_owned(&sc->sc_mtx);
     if (!locked)
         LAN78XX_LOCK(sc);
@@ -843,9 +844,22 @@ done:
         LAN78XX_UNLOCK(sc);
 }
 
-static void lan78xx_set_mdix_status(struct lan78xx_softc *sc, uint8_t mdix_ctrl) {
+/*
+ *  lan78xx_set_mdix_auto - Configures the device to enable automatic crossover
+ *  and polarity detection. LAN78XX provides HP Auto-MDIX functionality
+ *  for seamless crossover and polarity detection. Linux's ethtool allows
+ *  for manually forcing MDI or MDIX, but that feature is not preferred here.
+ *
+ *  @sc: driver soft context
+ *
+ *  LOCKING:
+ *  Takes and releases the device mutex lock if not already held.
+ */
+static void
+lan78xx_set_mdix_auto(struct lan78xx_softc *sc)
+{
     uint32_t buf, err;
-    // TODO: support other MDIX status right now it's only AUTO
+
     err = lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno,
                     LAN78XX_EXT_PAGE_ACCESS, LAN78XX_EXT_PAGE_SPACE_1);
     
@@ -907,8 +921,9 @@ lan78xx_phy_init(struct lan78xx_softc *sc)
     lan78xx_miibus_readreg(sc->sc_ue.ue_dev, sc->sc_phyno, LAN78XX_PHY_INTR_STAT);
     lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, LAN78XX_PHY_INTR_MASK,
                          (LAN78XX_PHY_INTR_ANEG_COMP | LAN78XX_PHY_INTR_LINK_CHANGE));
-    // TODO: pass MDIX_AUTO here instead of 0 later..
-    lan78xx_set_mdix_status(sc, 0);
+
+	/* Enabling Auto-MDIX for crossover and polarity detection. */
+    lan78xx_set_mdix_auto(sc);
 
     lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_ANAR,
                          ANAR_10 | ANAR_10_FD | ANAR_TX | ANAR_TX_FD |  /* all modes */
@@ -1016,9 +1031,11 @@ lan78xx_chip_init(struct lan78xx_softc *sc)
     err = lan78xx_write_reg(sc, LAN78XX_USB_CFG0, buf);
  
     /*
+	 *
      * Set FCL's RX and TX FIFO sizes: according to data sheet this is already the 
-     * default value. But we initialize it to the same value anyways.
-     * Linux driver does it, cuz why not :)
+     * default value. But we initialize it to the same value anyways, as that's 
+	 * what the Linux driver does.
+	 *
      */
 
     buf = (LAN78XX_MAX_RX_FIFO_SIZE - 512) / 512;
@@ -1274,6 +1291,16 @@ tr_setup:
     }
 }
 
+/**
+ *	lan78xx_bulk_write_callback - Write callback used to send ethernet frame(s)
+ *	@xfer: the USB transfer
+ *	@error: error code if the transfers is in an errored state
+ *
+ *	The main write function that pulls ethernet frames off the queue and sends
+ *	them out.
+ *	
+ */
+
 static void
 lan78xx_bulk_write_callback(struct usb_xfer *xfer, usb_error_t error)
 {
@@ -1281,8 +1308,9 @@ lan78xx_bulk_write_callback(struct usb_xfer *xfer, usb_error_t error)
     struct ifnet *ifp = uether_getifp(&sc->sc_ue);
     struct usb_page_cache *pc;
     struct mbuf *m;
-    uint32_t frm_len = 0, tx_cmd_a = 0, tx_cmd_b = 0;
     int nframes;
+    uint32_t frm_len = 0, tx_cmd_a = 0, tx_cmd_b = 0;
+
     switch (USB_GET_STATE(xfer)) {
     case USB_ST_TRANSFERRED:
         lan78xx_dbg_printf(sc, "USB TRANSFER status: USB_ST_TRANSFERRED\n");
