@@ -1,9 +1,12 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2012
- *  Arshan Khanifar <arshankhanifar@gmail.com>.
- * All rights reserved.
+ * Copyright (C) 2012
+ *	Ben Gray <bgray@freebsd.org>.
+ *
+ * Copyright (C) 2018 The FreeBSD Foundation
+ * This software was developed by Arshan Khanifar <arshankhanifar@gmail.com>
+ * under sponsorship from the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -25,6 +28,8 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
+ *
+ * $FreeBSD$
  */
 
 #include <sys/cdefs.h>
