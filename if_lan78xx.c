@@ -2,8 +2,7 @@
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
  * Copyright (C) 2012
- *	Ben Gray <bgray@freebsd.org>.
- *
+ * Ben Gray <bgray@freebsd.org>.
  * Copyright (C) 2018 The FreeBSD Foundation
  * This software was developed by Arshan Khanifar <arshankhanifar@gmail.com>
  * under sponsorship from the FreeBSD Foundation.
