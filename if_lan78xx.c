@@ -45,11 +45,19 @@ __FBSDID("$FreeBSD$");
  * by Microchip.
  *
  *
- * H/W TCP & UDP Checksum Offloading
- * ---------------------------------
- * The chip supports both tx and rx offloading of UDP & TCP checksums, this
- * feature can be dynamically enabled/disabled. None have been implemented yet.
- * //TODO: update this when checksumming is implemented.
+ * REMAINING FEATURES
+ * ------------------
+ * There are a bunch of features that the chip supports but have not been implemented
+ * in this driver yet. This will serve as a TODO list for the author and other 
+ * contributors to consider.
+ * 1. RX/TX checksum offloading: nothing has been implemented yet for TX checksumming, 
+ * RX checksumming works with ICMP messages, but its broken for TCP/UDP packets.
+ * 2. Direct address translation filtering: implemented but not tested yet. 
+ * 3. VLAN tag removal: not implemented yet.
+ * 4. Reading MAC address from the device tree: this is specific to Raspberry PI.
+ * 5. Support for USB interrupt endpoints.
+ * 6. Latency Tolerance Messaging (LTM) support.
+ * 7. TCP LSO support.
  *
  */
 
@@ -81,7 +89,7 @@ __FBSDID("$FreeBSD$");
 
 #include "opt_platform.h"
 
-// TODO: read mac address from device tree.
+/* For reading the mac address from device tree.*/
 #ifdef FDT
 #include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
@@ -109,14 +117,9 @@ SYSCTL_INT(_hw_usb_lan78xx, OID_AUTO, debug, CTLFLAG_RWTUN, &lan78xx_debug, 0,
     "Debug level");
 #endif
 
-// TODO: TCP/UDP packets don't work when RX csum enabled.
 #define LAN78XX_DEFAULT_RX_CSUM_ENABLE (false)
-#define LAN78XX_DEFAULT_TX_CSUM_ENABLE (false) // TODO: not implemented
-#define LAN78XX_DEFAULT_TSO_CSUM_ENABLE (false) // TODO: not implemented
-
-// TODO: move this info to usbdevs
-#define USB_VENDOR_MICROCHIP  0x0424
-#define USB_PRODUCT_MICROCHIP_LAN7800  0x7800
+#define LAN78XX_DEFAULT_TX_CSUM_ENABLE (false)
+#define LAN78XX_DEFAULT_TSO_CSUM_ENABLE (false)
 
 /*
  * Various supported device vendors/products.
@@ -237,7 +240,6 @@ static const struct usb_config lan78xx_config[LAN78XX_N_TRANSFER] = {
         .callback = lan78xx_bulk_read_callback,
         .timeout = 0,   /* no timeout */
     },
-    // TODO: add support for interrupt endpoints
     /* The LAN78XX chip supports interrupt endpoints, however they aren't
      * needed as we poll on the MII status.
      */
@@ -893,7 +895,6 @@ lan78xx_set_mdix_auto(struct lan78xx_softc *sc)
  *  values.  The 'link down' and 'auto-negotiation complete' interrupts
  *  from the PHY are also enabled, however we don't monitor the interrupt
  *  endpoints for the moment.
- *  //TODO: attach interrupt handlers later.
  *
  *  RETURNS:
  *  Returns 0 on success or EIO if failed to reset the PHY.
@@ -1350,13 +1351,10 @@ tr_setup:
             tx_cmd_a = (m->m_pkthdr.len & LAN78XX_TX_CMD_A_LEN_MASK_) |
                                     LAN78XX_TX_CMD_A_FCS_;
             tx_cmd_a = htole32(tx_cmd_a);
-            // TODO: ADD CHECKSUM BITS LATER
             usbd_copy_in(pc, 0, &tx_cmd_a, sizeof(tx_cmd_a));
             
             tx_cmd_b = 0;
-            // TODO: set the tcp Large Segment Offload (LSO) bit here
-            // TODO: set the MSS bit here (if LSO is enabled)
-            // TODO: set the vlan tag here (have to check if its enabled)
+			/* TCP LSO Support will probably be implemented here. */
             tx_cmd_b = htole32(tx_cmd_b);
             usbd_copy_in(pc, 4, &tx_cmd_b, sizeof(tx_cmd_b));
             
@@ -1499,7 +1497,6 @@ lan78xx_attach_post_sub(struct usb_ether *ue)
     /*
      * The chip supports TCP/UDP checksum offloading on TX and RX paths, however
      * currently only RX checksum is supported in the driver (see top of file).
-     * TODO: add RX and TX checksumming
      */
     ifp->if_hwassist = 0;
     if (LAN78XX_DEFAULT_RX_CSUM_ENABLE)
@@ -1871,7 +1868,6 @@ static int lan78xx_sethwcsum(struct lan78xx_softc *sc)
         return (-EIO);
 
     LAN78XX_LOCK_ASSERT(sc, MA_OWNED);
-    // TODO: TX CSUM, and VLAN filtering
 
     if (ifp->if_capabilities & IFCAP_RXCSUM) {
         sc->sc_rfe_ctl |= LAN78XX_RFE_CTL_IGMP_COE_ | LAN78XX_RFE_CTL_ICMP_COE_;
